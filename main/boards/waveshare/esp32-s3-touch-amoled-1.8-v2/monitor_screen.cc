@@ -135,17 +135,30 @@ bool MonitorScreen::IsShown() const {
 void MonitorScreen::StartGesturePolling() {
     auto display = Board::GetInstance().GetDisplay();
     if (!display) {
+        ESP_LOGE(TAG, "gesture polling: display is NULL, skipped");
         return;
     }
     DisplayLockGuard guard(display);
     if (!gesture_timer_) {
+        ESP_LOGI(TAG, "gesture polling: creating 100ms timer");
         gesture_timer_ = lv_timer_create(SwipeTimerCb, 100, this);
-        ESP_LOGI(TAG, "gesture polling started");
+        if (gesture_timer_) {
+            ESP_LOGI(TAG, "gesture polling started");
+        } else {
+            ESP_LOGE(TAG, "gesture polling: lv_timer_create FAILED");
+        }
+    } else {
+        ESP_LOGI(TAG, "gesture polling: timer already exists");
     }
 }
 
 void MonitorScreen::SwipeTimerCb(lv_timer_t* t) {
     (void)t;
+    // 【探针】LVGL 任务存活打点：每 10 秒一条（若日志无此条，说明 LVGL 任务未运行）
+    static uint32_t tick = 0;
+    if (++tick % 100 == 0) {
+        ESP_LOGI(TAG, "lvgl alive tick=%u", (unsigned)(tick / 100));
+    }
     lv_indev_t* indev = lv_indev_get_next(nullptr);
     while (indev) {
         if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
@@ -154,9 +167,15 @@ void MonitorScreen::SwipeTimerCb(lv_timer_t* t) {
         indev = lv_indev_get_next(indev);
     }
     if (!indev) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            ESP_LOGE(TAG, "gesture: no POINTER indev found");
+        }
         return;
     }
     if (lv_indev_get_gesture_dir(indev) == LV_DIR_LEFT) {
+        ESP_LOGI(TAG, "gesture: LEFT detected, toggling");
         KeyboardMonitor::GetInstance().Toggle();
     }
 }
@@ -471,4 +490,3 @@ void MonitorScreen::UpdateWidgets() {
         lv_label_set_text(batt_pct_[i], buf);
     }
 }
-//（注：内容由AI生成）

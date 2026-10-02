@@ -51,6 +51,21 @@ KeyboardMonitor& KeyboardMonitor::GetInstance() {
 // 幂等设计：休眠唤醒会再次调用，按 controller/bluedroid 当前状态跳过已完成步骤。
 static bool InitBle() {
     esp_err_t err;
+    // 【探针】确认蓝牙核绑定配置是否真正编入本固件（config.json sdkconfig_append 生效检查）
+#ifdef CONFIG_BT_CTRL_PINNED_TO_CORE_CHOICE_0
+    ESP_LOGI(TAG, "BT_CTRL core=0 (config applied)");
+#elif defined(CONFIG_BT_CTRL_PINNED_TO_CORE_CHOICE_1)
+    ESP_LOGI(TAG, "BT_CTRL core=1 (config NOT applied!)");
+#else
+    ESP_LOGI(TAG, "BT_CTRL core config missing");
+#endif
+#ifdef CONFIG_BT_BLUEDROID_PINNED_TO_CORE_0
+    ESP_LOGI(TAG, "BLUEDROID core=0 (config applied)");
+#elif defined(CONFIG_BT_BLUEDROID_PINNED_TO_CORE_1)
+    ESP_LOGI(TAG, "BLUEDROID core=1 (config NOT applied!)");
+#else
+    ESP_LOGI(TAG, "BLUEDROID core config missing");
+#endif
     esp_bt_controller_status_t ctl_st = esp_bt_controller_get_status();
     if (ctl_st == ESP_BT_CONTROLLER_STATUS_IDLE) {
         err = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
@@ -190,13 +205,32 @@ void KeyboardMonitor::HandleAdv(
             status_.mods = p[23];
             status_.wpm = p[24];
             status_.channel = p[25];
-            // 广播日志：打印 MAC 与关键数据（需要绑定 TARGET_MAC 时从中取地址）
-            ESP_LOGI(TAG,
-                     "adv %02X:%02X:%02X:%02X:%02X:%02X ch=%d L=%d%% R=%d%% "
-                     "wpm=%d layer='%s' keys='%s' rssi=%d",
-                     rst.bda[0], rst.bda[1], rst.bda[2], rst.bda[3], rst.bda[4],
-                     rst.bda[5], p[25], p[5], p[12], p[24], status_.layer_name,
-                     status_.typed_keys, rst.rssi);
+            // 广播日志（节流）：状态变化立即打印，无变化每 3 秒一条——
+            // 键盘 active 时广播 200ms 一条，若不节流会刷屏淹没系统日志
+            {
+                static KeyboardStatus last_log = {};
+                static int64_t last_log_us = 0;
+                int64_t now_us = esp_timer_get_time();
+                bool changed =
+                    status_.battery_left != last_log.battery_left ||
+                    status_.battery_right != last_log.battery_right ||
+                    status_.layer != last_log.layer ||
+                    status_.profile != last_log.profile ||
+                    status_.wpm != last_log.wpm ||
+                    status_.mods != last_log.mods ||
+                    memcmp(status_.layer_name, last_log.layer_name, 5) != 0 ||
+                    memcmp(status_.typed_keys, last_log.typed_keys, 6) != 0;
+                if (changed || now_us - last_log_us > 3 * 1000 * 1000) {
+                    ESP_LOGI(TAG,
+                             "adv %02X:%02X:%02X:%02X:%02X:%02X ch=%d L=%d%% R=%d%% "
+                             "wpm=%d layer='%s' keys='%s' rssi=%d",
+                             rst.bda[0], rst.bda[1], rst.bda[2], rst.bda[3], rst.bda[4],
+                             rst.bda[5], p[25], p[5], p[12], p[24], status_.layer_name,
+                             status_.typed_keys, rst.rssi);
+                    last_log = status_;
+                    last_log_us = now_us;
+                }
+            }
             return;
         }
         i += ad_len + 1;
