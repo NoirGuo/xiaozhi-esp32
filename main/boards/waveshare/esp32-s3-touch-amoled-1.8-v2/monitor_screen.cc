@@ -162,12 +162,13 @@ void MonitorScreen::SwipeTimerCb(lv_timer_t* t) {
 }
 
 // ---------- 定时刷新 ----------
+// LVGL 9.5：lv_timer_t 结构体为私有（lv_timer_private.h），必须用公开访问器取 user_data
 void MonitorScreen::RefreshTimerCb(lv_timer_t* t) {
-    static_cast<MonitorScreen*>(t->user_data)->UpdateWidgets();
+    static_cast<MonitorScreen*>(lv_timer_get_user_data(t))->UpdateWidgets();
 }
 
 void MonitorScreen::ReturnTimerCb(lv_timer_t* t) {
-    auto* self = static_cast<MonitorScreen*>(t->user_data);
+    auto* self = static_cast<MonitorScreen*>(lv_timer_get_user_data(t));
     self->Hide();
     KeyboardMonitor::GetInstance().SetActive(false);
 }
@@ -257,14 +258,14 @@ void MonitorScreen::BuildWidgets() {
     wpm_label_ = lv_label_create(screen_);
     lv_obj_set_style_text_color(wpm_label_, kDim, 0);
     lv_obj_set_style_text_font(wpm_label_, LV_FONT_DEFAULT, 0);
-    lv_obj_set_style_transform_scale(wpm_label_, 150, 0);  // 16px→~24px
+    lv_obj_set_style_transform_scale(wpm_label_, 205, 0);  // 30px→≈24px（256=100%）
     lv_obj_set_pos(wpm_label_, WPM_LABEL_X, WPM_LABEL_Y);
     lv_label_set_text(wpm_label_, "WPM");
 
     wpm_num_ = lv_label_create(screen_);
     lv_obj_set_style_text_color(wpm_num_, kFg, 0);
     lv_obj_set_style_text_font(wpm_num_, LV_FONT_DEFAULT, 0);
-    lv_obj_set_style_transform_scale(wpm_num_, 225, 0);  // 16px→~36px
+    lv_obj_set_style_transform_scale(wpm_num_, 307, 0);  // 30px→≈36px（256=100%）
     lv_obj_set_pos(wpm_num_, WPM_NUM_X, WPM_NUM_Y);
     lv_obj_set_width(wpm_num_, WPM_NUM_W);  // 3 位数字上限
     lv_obj_set_style_text_align(wpm_num_, LV_TEXT_ALIGN_LEFT, 0);

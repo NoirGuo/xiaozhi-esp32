@@ -28,7 +28,8 @@ static const char* TAG = "KeyboardMonitor";
 #define KM_DEBOUNCE_US (500LL * 1000LL)
 
 // 低占空扫描：80ms 周期 / 30ms 窗口（如功耗敏感可改 BLE_SCAN_DUPLICATE）
-static const esp_ble_scan_params_t kScanParams = {
+// 注意：ESP-IDF 6.x 中 esp_ble_gap_set_scan_params 参数为非 const 指针
+static esp_ble_scan_params_t kScanParams = {
     .scan_type = BLE_SCAN_TYPE_ACTIVE,  // 主动扫描，可收到 Scan Response
     .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
     .scan_filter_policy = BLE_SCAN_FILTER_ALLOW_ALL,
@@ -94,7 +95,9 @@ void KeyboardMonitor::HandleAdv(
         return;
     }
 
-    const uint8_t* d = rst.adv_data;
+    // ESP-IDF 6.x：扫描结果为单缓冲区 ble_adv（adv 数据 + scan rsp 拼接），
+    // 长度由 adv_data_len / scan_rsp_len 给出
+    const uint8_t* d = rst.ble_adv;
     uint8_t len = rst.adv_data_len;
     uint8_t i = 0;
     while (i < len) {

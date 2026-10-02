@@ -4,6 +4,9 @@
 #include <cstring>
 #include <mutex>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 #include "esp_gap_ble_api.h"
 #include "esp_timer.h"
 
@@ -89,16 +92,18 @@ public:
     // 频道过滤（Kconfig，默认 1）+ MAC 绑定（TARGET_MAC 或运行期 SetTargetMac）
     void SetTargetMac(const uint8_t* mac);   // nullptr = 不绑定
 
+    // 以下为 BLE 栈 / FreeRTOS 回调入口，需从自由函数调用，故为 public：
+    static void ScanTaskThunk(void* arg);
+    static void GapEventHandler(esp_gap_ble_cb_event_t event,
+                                esp_ble_gap_cb_param_t* param);
+
 private:
     KeyboardMonitor() = default;
     ~KeyboardMonitor() = default;
     KeyboardMonitor(const KeyboardMonitor&) = delete;
     KeyboardMonitor& operator=(const KeyboardMonitor&) = delete;
 
-    static void ScanTaskThunk(void* arg);
     void ScanTask();
-    static void GapEventHandler(esp_gap_ble_cb_event_t event,
-                                esp_ble_gap_cb_param_t* param);
     void HandleAdv(const esp_ble_gap_cb_param_t::ble_scan_result_evt_param& rst);
     void ParseTargetMac(const char* str);
 
