@@ -8,7 +8,11 @@
             "sdkconfig_append": [
                 "CONFIG_USE_WECHAT_MESSAGE_STYLE=y",
                 "CONFIG_BT_ENABLED=y",
-                "CONFIG_BT_BLUEDROID_ENABLED=y"
+                "CONFIG_BT_BLUEDROID_ENABLED=y",
+                "CONFIG_BT_BLE_42_FEATURES_SUPPORTED=y",
+                "CONFIG_BT_BLE_42_ADV_EN=y",
+                "CONFIG_BT_BLE_42_SCAN_EN=y",
+                "CONFIG_BT_BLE_50_FEATURES_SUPPORTED=n"
             ]
         }
     ]
