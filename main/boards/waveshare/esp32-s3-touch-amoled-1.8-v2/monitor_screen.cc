@@ -35,12 +35,12 @@ static const char* TAG = "MonitorScreen";
 #define CHART_H 45
 #define CHART_X MARGIN
 #define CHART_Y (CONN_Y + (CONN_H * 2 + CONN_GAP - CHART_H) / 2)  // 32
-// WPM 标签 / 数字（水平排列，间距 4/2）
+// WPM 标签 / 数字（水平排列；垂直居中于折线高 45）
 #define WPM_LABEL_X (CHART_X + CHART_W + 4)
-#define WPM_LABEL_Y (CHART_Y + CHART_H / 2 - 12)  // 24px 字，垂直居中
-#define WPM_NUM_X (WPM_LABEL_X + 48 + 2)
-#define WPM_NUM_Y (CHART_Y + CHART_H / 2 - 18)    // 36px 字，垂直居中
-#define WPM_NUM_W 66                               // 3 位 36px 数字上限
+#define WPM_LABEL_Y (CHART_Y + CHART_H / 2 - 8)    // 16px 字，垂直居中
+#define WPM_NUM_X (WPM_LABEL_X + 36 + 4)
+#define WPM_NUM_Y (CHART_Y + CHART_H / 2 - 14)     // 28px 字，垂直居中
+#define WPM_NUM_W 66                               // 3 位数字上限
 
 // 折线纵向映射：y = H - v*H/200（纵坐标上限 200，无刻度）
 #define WPM_CHART_TOP 200
@@ -300,20 +300,16 @@ void MonitorScreen::BuildWidgets() {
     lv_obj_set_pos(wpm_dot_, CHART_X, CHART_Y);
     lv_obj_add_flag(wpm_dot_, LV_OBJ_FLAG_HIDDEN);
 
-    // --- 顶部 WPM 标签 + 数字（LVGL 9 transform_scale 基数 2048=100%） ---
-    // 效果图像素字号（LV_FONT_DEFAULT≈14px）：标签 24px → 24/14*2048=3511
+    // --- 顶部 WPM 标签 + 数字（直接用 LVGL 内置 Montserrat 字体，矢量清晰） ---
     wpm_label_ = lv_label_create(screen_);
     lv_obj_set_style_text_color(wpm_label_, kDim, 0);
-    lv_obj_set_style_text_font(wpm_label_, LV_FONT_DEFAULT, 0);
-    lv_obj_set_style_transform_scale(wpm_label_, 3511, 0);  // 24px 效果
+    lv_obj_set_style_text_font(wpm_label_, &lv_font_montserrat_16, 0);
     lv_obj_set_pos(wpm_label_, WPM_LABEL_X, WPM_LABEL_Y);
     lv_label_set_text(wpm_label_, "WPM");
 
-    // 数字 36px 效果 → 36/14*2048=5266（约 130%）
     wpm_num_ = lv_label_create(screen_);
     lv_obj_set_style_text_color(wpm_num_, kFg, 0);
-    lv_obj_set_style_text_font(wpm_num_, LV_FONT_DEFAULT, 0);
-    lv_obj_set_style_transform_scale(wpm_num_, 5266, 0);  // 36px 效果
+    lv_obj_set_style_text_font(wpm_num_, &lv_font_montserrat_28, 0);
     lv_obj_set_pos(wpm_num_, WPM_NUM_X, WPM_NUM_Y);
     lv_obj_set_width(wpm_num_, WPM_NUM_W);  // 3 位数字上限
     lv_obj_set_style_text_align(wpm_num_, LV_TEXT_ALIGN_LEFT, 0);
@@ -331,8 +327,7 @@ void MonitorScreen::BuildWidgets() {
     lv_obj_set_style_radius(conn_usb_, 6, 0);
     conn_usb_label_ = lv_label_create(conn_usb_);
     lv_obj_center(conn_usb_label_);
-    lv_obj_set_style_text_font(conn_usb_label_, LV_FONT_DEFAULT, 0);
-    lv_obj_set_style_transform_scale(conn_usb_label_, 2341, 0);  // 16px 效果
+    lv_obj_set_style_text_font(conn_usb_label_, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(conn_usb_label_, kDim, 0);
     lv_label_set_text(conn_usb_label_, "USB");
 
@@ -347,23 +342,20 @@ void MonitorScreen::BuildWidgets() {
     lv_obj_set_style_radius(conn_ble_, 6, 0);
     conn_ble_label_ = lv_label_create(conn_ble_);
     lv_obj_center(conn_ble_label_);
-    lv_obj_set_style_text_font(conn_ble_label_, LV_FONT_DEFAULT, 0);
-    lv_obj_set_style_transform_scale(conn_ble_label_, 2341, 0);  // 16px 效果
+    lv_obj_set_style_text_font(conn_ble_label_, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(conn_ble_label_, kDim, 0);
     lv_label_set_text(conn_ble_label_, "BLE");
 
-    // --- 中央三行（LVGL9 transform_scale 基数 2048=100%） ---
+    // --- 中央三行 ---
     layer_label_ = lv_label_create(screen_);
     lv_obj_set_style_text_color(layer_label_, kAccent, 0);
-    lv_obj_set_style_text_font(layer_label_, LV_FONT_DEFAULT, 0);
-    lv_obj_set_style_transform_scale(layer_label_, 3218, 0);  // 22px 效果
+    lv_obj_set_style_text_font(layer_label_, &lv_font_montserrat_24, 0);
     lv_obj_align(layer_label_, LV_ALIGN_CENTER, 0, LAYER_Y - SCREEN_H / 2);
     lv_label_set_text(layer_label_, "BASE");
 
     typed_label_ = lv_label_create(screen_);
     lv_obj_set_style_text_color(typed_label_, kFg, 0);
-    lv_obj_set_style_text_font(typed_label_, LV_FONT_DEFAULT, 0);
-    lv_obj_set_style_transform_scale(typed_label_, 2633, 0);  // 18px 效果
+    lv_obj_set_style_text_font(typed_label_, &lv_font_montserrat_20, 0);
     lv_obj_align(typed_label_, LV_ALIGN_CENTER, 0, TYPED_Y - SCREEN_H / 2);
     lv_label_set_text(typed_label_, "");
 
@@ -382,6 +374,7 @@ void MonitorScreen::BuildWidgets() {
 
         lv_obj_t* lab = lv_label_create(chip);
         lv_obj_center(lab);
+        lv_obj_set_style_text_font(lab, &lv_font_montserrat_16, 0);
         lv_obj_set_style_text_color(lab, kDim, 0);
         lv_label_set_text(lab, kMods[i]);
         mod_chip_[i] = chip;
@@ -405,6 +398,7 @@ void MonitorScreen::BuildWidgets() {
         batt_bar_[i] = bar;
 
         lv_obj_t* pct = lv_label_create(screen_);
+        lv_obj_set_style_text_font(pct, &lv_font_montserrat_16, 0);
         lv_obj_set_style_text_color(pct, kPref[i], 0);
         lv_obj_align_to(pct, bar, LV_ALIGN_OUT_TOP_MID, 0, -6);
         batt_pct_[i] = pct;

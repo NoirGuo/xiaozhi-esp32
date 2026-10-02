@@ -387,6 +387,9 @@ private:
 public:
     WaveshareEsp32s3TouchAMOLED1inch8() :
         boot_button_(BOOT_BUTTON_GPIO) {
+        // 强制使用 dark 主题（黑底）。LcdDisplay 构造时从 NVS 命名空间 "display"
+        // 读 key "theme"（默认 "light"），必须在 InitializeDisplay() 之前写入。
+        Settings("display", false).SetString("theme", "dark");
         InitializePowerSaveTimer();
         InitializeCodecI2c();
         InitializeTca9554();
@@ -436,4 +439,3 @@ public:
 };
 
 DECLARE_BOARD(WaveshareEsp32s3TouchAMOLED1inch8);
-//（注：内容由AI生成）
