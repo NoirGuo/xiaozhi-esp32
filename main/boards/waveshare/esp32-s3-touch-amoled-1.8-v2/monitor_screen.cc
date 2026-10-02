@@ -8,6 +8,9 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 #include <cstdio>
 #include <cstring>
 
@@ -133,6 +136,13 @@ bool MonitorScreen::IsShown() const {
 
 // ---------- 手势轮询（左滑切换） ----------
 void MonitorScreen::StartGesturePolling() {
+    // 【启动期错峰】本函数由扫描任务在 BLE 初始化后调用。启动早期（约 3.9~4.5s）
+    // WiFi/BLE 的 phy 校准会写一次 NVS（flash 写），此时 CPU1 若正在执行
+    // LVGL 的 flash 代码（如本 timer 回调），双核共享 flash cache 会取指失败
+    // → IllegalInstruction panic（PC 落在 0x4202xxxx flash 映射区）→ 重启循环。
+    // 这里在拿 LVGL 锁之前先让出 5 秒，等校准保存窗口过去再建 timer，
+    // 校准数据保存成功之后后续启动不再重校准，问题自愈。
+    vTaskDelay(pdMS_TO_TICKS(5000));
     ESP_LOGI(TAG, "gesture: enter StartGesturePolling");
     auto& self = MonitorScreen::GetInstance();
     ESP_LOGI(TAG, "gesture: GetInstance OK");
