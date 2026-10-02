@@ -129,11 +129,16 @@ void KeyboardMonitor::ScanTask() {
         ESP_LOGE(TAG, "BLE init failed, keyboard monitor disabled (AI still works)");
         return;
     }
-    // 【按需扫描】只初始化 BLE 栈，不立即扫描——
-    // 扫描在切入监听界面时 StartScanning() 开启、退出时 StopScanning() 关闭，
-    // 平时不占 RF（蓝牙射频完全让给 WiFi），也降低功耗。
+    // 【临时实验版 v2】BLE ready 后立即开始扫描、任务常驻不退出。
+    // 目的：验证"enable 后不扫描 + 任务退出"是否触发 controller 崩溃
+    //（之前持续扫描版稳定跑 47s 不崩；按需版每次 BLE ready 后即 CPU1 panic）。
+    // 若本版稳定 → 崩因是"空闲/任务退出"；若仍崩 → 与扫描无关，等 elf 反查。
     ble_ready_ = true;
-    ESP_LOGI(TAG, "BLE ready (scan on demand)");
+    ESP_LOGI(TAG, "BLE ready (experiment: scanning now)");
+    StartScanning();
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 }
 
 // ---------- 按需扫描（监听界面才开，退出即关） ----------

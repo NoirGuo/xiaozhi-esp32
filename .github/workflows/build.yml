@@ -101,5 +101,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: xiaozhi_${{ matrix.ci_name || matrix.full_name }}_${{ github.sha }}
-          path: build/merged-binary.bin
+          path: |
+            build/merged-binary.bin
+            build/xiaozhi.elf
+            build/xiaozhi.elf.map
           if-no-files-found: error
