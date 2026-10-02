@@ -1,6 +1,7 @@
 #include "wifi_board.h"
 #include "display/lcd_display.h"
 #include "esp_lcd_co5300.h"
+#include "keyboard_monitor.h"
 
 #include "codecs/es8311_audio_codec.h"
 #include "application.h"
@@ -206,10 +207,12 @@ private:
         power_save_timer_->OnEnterSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(true);
             GetBacklight()->SetBrightness(20);
+            KeyboardMonitor::GetInstance().Stop();   // 键盘监控：休眠停扫描并隐藏界面
         });
         power_save_timer_->OnExitSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(false);
             GetBacklight()->RestoreBrightness();
+            KeyboardMonitor::GetInstance().Start();  // 键盘监控：唤醒恢复扫描
         });
         power_save_timer_->OnShutdownRequest([this]() {
             pmic_->PowerOff();
@@ -365,6 +368,13 @@ private:
     // 初始化工具
     void InitializeTools() {
         auto &mcp_server = McpServer::GetInstance();
+        mcp_server.AddTool("keyboard_monitor_toggle",
+            "切换键盘状态监控界面（显示/隐藏键盘 WPM、层、最近输入、电量等状态）。"
+            "用户说'打开键盘监控'、'查看键盘状态'时调用，不需要参数。",
+            PropertyList(), [](const PropertyList&) {
+                KeyboardMonitor::GetInstance().Toggle();
+                return true;
+            });
         mcp_server.AddTool("self.system.reconfigure_wifi",
             "End this conversation and enter WiFi configuration mode.\n"
             "**CAUTION** You must ask the user to confirm this action.",
@@ -386,6 +396,7 @@ public:
          InitializeTouch();
         InitializeButtons();
         InitializeTools();
+        KeyboardMonitor::GetInstance().Start();      // 键盘监控：启动 BLE 扫描与手势轮询
     }
 
     virtual AudioCodec* GetAudioCodec() override {
@@ -425,3 +436,4 @@ public:
 };
 
 DECLARE_BOARD(WaveshareEsp32s3TouchAMOLED1inch8);
+//（注：内容由AI生成）
