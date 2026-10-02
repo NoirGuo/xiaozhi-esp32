@@ -66,7 +66,10 @@ static bool InitBle() {
         ctl_st = esp_bt_controller_get_status();
     }
     if (ctl_st == ESP_BT_CONTROLLER_STATUS_INITED || ctl_st == ESP_BT_CONTROLLER_STATUS_IDLE) {
-        err = esp_bt_controller_enable(ESP_BT_MODE_BTDM);
+        // ESP32-S3 无经典蓝牙（BR/EDR），控制器只支持 BLE 模式（mode 1）。
+        // 用 ESP_BT_MODE_BTDM(3) 会报 "invalid mode 3, controller support mode is 1"，
+        // enable 失败后控制器处于半初始化状态，80ms 后触发 IllegalInstruction panic。
+        err = esp_bt_controller_enable(ESP_BT_MODE_BLE);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "bt controller enable failed: %s", esp_err_to_name(err));
             return false;
