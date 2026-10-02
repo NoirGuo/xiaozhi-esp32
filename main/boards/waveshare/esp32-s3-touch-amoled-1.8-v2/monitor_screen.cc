@@ -133,15 +133,20 @@ bool MonitorScreen::IsShown() const {
 
 // ---------- 手势轮询（左滑切换） ----------
 void MonitorScreen::StartGesturePolling() {
+    ESP_LOGI(TAG, "gesture: enter StartGesturePolling");
+    auto& self = MonitorScreen::GetInstance();
+    ESP_LOGI(TAG, "gesture: GetInstance OK");
     auto display = Board::GetInstance().GetDisplay();
+    ESP_LOGI(TAG, "gesture: display=%s", display ? "ok" : "NULL");
     if (!display) {
-        ESP_LOGE(TAG, "gesture polling: display is NULL, skipped");
         return;
     }
+    ESP_LOGI(TAG, "gesture: taking lock");
     DisplayLockGuard guard(display);
+    ESP_LOGI(TAG, "gesture: lock acquired");
     if (!gesture_timer_) {
         ESP_LOGI(TAG, "gesture polling: creating 100ms timer");
-        gesture_timer_ = lv_timer_create(SwipeTimerCb, 100, this);
+        gesture_timer_ = lv_timer_create(SwipeTimerCb, 100, &self);
         if (gesture_timer_) {
             ESP_LOGI(TAG, "gesture polling started");
         } else {
@@ -190,6 +195,7 @@ void MonitorScreen::ReturnTimerCb(lv_timer_t* t) {
     auto* self = static_cast<MonitorScreen*>(lv_timer_get_user_data(t));
     self->Hide();
     KeyboardMonitor::GetInstance().SetActive(false);
+    KeyboardMonitor::GetInstance().StopScanning();  // 30s 自动返回：停止扫描
 }
 
 // ---------- WPM 历史缓冲 ----------

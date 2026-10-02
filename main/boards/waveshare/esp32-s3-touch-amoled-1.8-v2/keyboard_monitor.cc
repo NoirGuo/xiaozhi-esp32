@@ -120,11 +120,27 @@ void KeyboardMonitor::ScanTaskThunk(void* arg) {
 
 void KeyboardMonitor::ScanTask() {
     vTaskDelay(pdMS_TO_TICKS(1500));  // 等系统/音频就绪
+    // 【关键时序修复】手势轮询不能在 Board 构造（main 线程）创建：
+    // 那时 LVGL 任务刚启动可能持锁初始化，而 lv_lock() 无超时，
+    // main 线程拿锁会永久卡死 → Application::Initialize() 不执行 → 白屏。
+    // 改在扫描任务内（此处约 4s，系统已完全启动、LVGL 正常循环）创建。
+    MonitorScreen::GetInstance().StartGesturePolling();
     if (!InitBle()) {
         ESP_LOGE(TAG, "BLE init failed, keyboard monitor disabled (AI still works)");
         return;
     }
+    // 【按需扫描】只初始化 BLE 栈，不立即扫描——
+    // 扫描在切入监听界面时 StartScanning() 开启、退出时 StopScanning() 关闭，
+    // 平时不占 RF（蓝牙射频完全让给 WiFi），也降低功耗。
+    ble_ready_ = true;
+    ESP_LOGI(TAG, "BLE ready (scan on demand)");
+}
 
+// ---------- 按需扫描（监听界面才开，退出即关） ----------
+void KeyboardMonitor::StartScanning() {
+    if (!started_ || !ble_ready_ || scanning_) {
+        return;
+    }
     esp_err_t err = esp_ble_gap_set_scan_params(&kScanParams);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "set scan params failed: %s", esp_err_to_name(err));
@@ -137,10 +153,15 @@ void KeyboardMonitor::ScanTask() {
     }
     scanning_ = true;
     ESP_LOGI(TAG, "BLE scanning started");
+}
 
-    while (scanning_) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+void KeyboardMonitor::StopScanning() {
+    if (!scanning_) {
+        return;
     }
+    scanning_ = false;
+    esp_ble_gap_stop_scanning();  // 幂等；未初始化/已停止时仅返回错误码
+    ESP_LOGI(TAG, "BLE scanning stopped");
 }
 
 // ---------- GAP 事件 ----------
@@ -253,7 +274,7 @@ void KeyboardMonitor::Start() {
     ESP_LOGI(TAG, "start: channel=%d mac=%s", CONFIG_KEYBOARD_MONITOR_CHANNEL,
              has_target_mac_ ? "bound" : "any");
     xTaskCreate(ScanTaskThunk, "km_scan", 4096, this, 5, &scan_task_handle_);
-    MonitorScreen::GetInstance().StartGesturePolling();
+    // StartGesturePolling 移入 ScanTask（InitBle 前调用）——不在 main 线程碰 LVGL 锁
 }
 
 void KeyboardMonitor::Stop() {
@@ -282,8 +303,10 @@ void KeyboardMonitor::Toggle() {
     SetActive(!active_);
     if (active_) {
         MonitorScreen::GetInstance().Show();
+        StartScanning();  // 切入监听界面才开启扫描
     } else {
         MonitorScreen::GetInstance().Hide();
+        StopScanning();  // 退出监听界面即停止扫描
     }
 }
 

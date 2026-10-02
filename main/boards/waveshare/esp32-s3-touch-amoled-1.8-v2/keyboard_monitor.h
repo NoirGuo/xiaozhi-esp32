@@ -12,8 +12,11 @@
 
 // ---- 可调参数默认值（无 Kconfig 时生效；若在 Kconfig.projbuild 定义了
 // CONFIG_KEYBOARD_MONITOR_*，ESP-IDF 生成的 CONFIG_ 宏会覆盖下面的默认值） ----
+// 【诊断开关】构建烧录后仍黑白屏时，把下面改成 0（关闭全部监控代码，
+// 系统回到纯小智）重新构建：若正常进入系统 → 问题在监控代码；若仍黑白屏
+// → 问题在 fork 分支 IDF6 构建基线/配置，与监控无关。
 #ifndef CONFIG_KEYBOARD_MONITOR_ENABLED
-#define CONFIG_KEYBOARD_MONITOR_ENABLED 0
+#define CONFIG_KEYBOARD_MONITOR_ENABLED 1
 #endif
 #ifndef CONFIG_KEYBOARD_MONITOR_CHANNEL
 #define CONFIG_KEYBOARD_MONITOR_CHANNEL 1
@@ -86,6 +89,10 @@ public:
     void SetActive(bool active);   // 自动返回后同步状态
     bool IsActive() const;
 
+    // 按需扫描：切入监听界面时开启、退出时关闭（平时不占射频）
+    void StartScanning();
+    void StopScanning();
+
     KeyboardStatus GetStatus() const;  // 互斥拷贝
 
     // 一对一监听（本协议无键盘 ID 字段）：
@@ -113,6 +120,7 @@ private:
     volatile bool started_ = false;
     volatile bool active_ = false;
     volatile bool scanning_ = false;
+    volatile bool ble_ready_ = false;  // BLE 栈已初始化（按需扫描前提）
     TaskHandle_t scan_task_handle_ = nullptr;
 
     uint8_t target_mac_[6] = {0};
@@ -120,4 +128,3 @@ private:
 
     int64_t last_toggle_us_ = 0;
 };
-//（注：内容由AI生成）
