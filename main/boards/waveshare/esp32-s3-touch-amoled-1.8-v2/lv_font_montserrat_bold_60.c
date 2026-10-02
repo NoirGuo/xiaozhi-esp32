@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 60 px
  * Bpp: 4
- * Opts: --no-compress --format lvgl -o lv_font_montserrat_bold_60.c --font Montserrat-Bold.ttf --size 60 --bpp 4 --range 0x20-0x7E --force-fast-kern-format
+ * Opts: --no-compress --format lvgl -o lv_font_montserrat_bold_60.c --font Montserrat-Bold700.ttf --size 60 --bpp 4 --range 0x20-0x7E --force-fast-kern-format
  ******************************************************************************/
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE
