@@ -44,15 +44,55 @@ KeyboardMonitor& KeyboardMonitor::GetInstance() {
 }
 
 // ---------- BLE 初始化 ----------
-static void InitBle() {
-    ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
-    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_bt_controller_init(&bt_cfg));
-    ESP_ERROR_CHECK(esp_bt_controller_enable(ESP_BT_MODE_BTDM));
-    ESP_ERROR_CHECK(esp_bluedroid_init());
-    ESP_ERROR_CHECK(esp_bluedroid_enable());
-    ESP_ERROR_CHECK(esp_ble_gap_register_callback(&KeyboardMonitor::GapEventHandler));
+// 键盘监控是附加功能：BLE 任何一步失败都只降级（记录日志、停用监控），
+// 绝不用 ESP_ERROR_CHECK abort——否则会拖垮整个小智系统（黑白屏重启循环）。
+// 特别注意：S3 无经典蓝牙，esp_bt_controller_mem_release(CLASSIC_BT) 会返回
+// 非 ESP_OK，必须容忍。
+// 幂等设计：休眠唤醒会再次调用，按 controller/bluedroid 当前状态跳过已完成步骤。
+static bool InitBle() {
+    esp_err_t err;
+    esp_bt_controller_status_t ctl_st = esp_bt_controller_get_status();
+    if (ctl_st == ESP_BT_CONTROLLER_STATUS_IDLE) {
+        err = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_ARG && err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "bt mem_release(CLASSIC): %s", esp_err_to_name(err));
+        }
+        esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+        err = esp_bt_controller_init(&bt_cfg);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "bt controller init failed: %s", esp_err_to_name(err));
+            return false;
+        }
+        ctl_st = esp_bt_controller_get_status();
+    }
+    if (ctl_st == ESP_BT_CONTROLLER_STATUS_INITED || ctl_st == ESP_BT_CONTROLLER_STATUS_IDLE) {
+        err = esp_bt_controller_enable(ESP_BT_MODE_BTDM);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "bt controller enable failed: %s", esp_err_to_name(err));
+            return false;
+        }
+    }
+    if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_UNINITIALIZED) {
+        err = esp_bluedroid_init();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "bluedroid init failed: %s", esp_err_to_name(err));
+            return false;
+        }
+    }
+    if (esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_ENABLED) {
+        err = esp_bluedroid_enable();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "bluedroid enable failed: %s", esp_err_to_name(err));
+            return false;
+        }
+    }
+    err = esp_ble_gap_register_callback(&KeyboardMonitor::GapEventHandler);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "gap register callback failed: %s", esp_err_to_name(err));
+        return false;
+    }
     ESP_LOGI(TAG, "BLE initialized");
+    return true;
 }
 
 // ---------- 扫描任务 ----------
@@ -62,10 +102,17 @@ void KeyboardMonitor::ScanTaskThunk(void* arg) {
 
 void KeyboardMonitor::ScanTask() {
     vTaskDelay(pdMS_TO_TICKS(1500));  // 等系统/音频就绪
-    InitBle();
+    if (!InitBle()) {
+        ESP_LOGE(TAG, "BLE init failed, keyboard monitor disabled (AI still works)");
+        return;
+    }
 
-    ESP_ERROR_CHECK(esp_ble_gap_set_scan_params(&kScanParams));
-    esp_err_t err = esp_ble_gap_start_scanning(0);  // 0 = 持续扫描
+    esp_err_t err = esp_ble_gap_set_scan_params(&kScanParams);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set scan params failed: %s", esp_err_to_name(err));
+        return;
+    }
+    err = esp_ble_gap_start_scanning(0);  // 0 = 持续扫描
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "start scanning failed: %s", esp_err_to_name(err));
         return;
@@ -177,11 +224,12 @@ void KeyboardMonitor::Stop() {
         return;
     }
     scanning_ = false;
-    esp_ble_gap_stop_scanning();
+    esp_ble_gap_stop_scanning();  // BLE 未初始化时仅返回错误码，安全
     if (active_) {
         MonitorScreen::GetInstance().Hide();
         SetActive(false);
     }
+    started_ = false;  // 允许休眠唤醒后 Start() 重新启动扫描任务
     ESP_LOGI(TAG, "stopped");
 }
 
@@ -238,4 +286,3 @@ void KeyboardMonitor::ParseTargetMac(const char* str) {
         ESP_LOGW(TAG, "invalid MAC filter: %s", str);
     }
 }
-//（注：内容由AI生成）
