@@ -32,12 +32,13 @@ static const char* TAG = "MonitorScreen";
 #define BLE_X (SCREEN_W - MARGIN - CONN_W)
 
 // WPM 行：折线 + WPM 标签 + 数字 横向排列（连接状态下方）
-#define CHART_W 160
+// 实测 Montserrat 28px "WPM"=77px（W=30+P=20+M=27），数字 3 位≤55px
+#define CHART_W 130
 #define CHART_H 40
 #define CHART_X MARGIN
 #define CHART_Y 100
-#define WPM_LABEL_X (CHART_X + CHART_W + 10)
-#define WPM_NUM_X (WPM_LABEL_X + 72)              // 28px "WPM" 宽约 62px，留 10px 间隙
+#define WPM_LABEL_X (CHART_X + CHART_W + 12)
+#define WPM_NUM_X (WPM_LABEL_X + 88)              // WPM 77px + 11px 间隙
 #define WPM_LINE_Y (CHART_Y + CHART_H / 2 - 14)   // 28px 字垂直居中
 
 // 折线纵向映射：y = H - v*H/200（纵坐标上限 200，无刻度）
@@ -395,8 +396,8 @@ void MonitorScreen::BuildWidgets() {
         lv_obj_set_style_text_font(pct, &lv_font_montserrat_28, 0);
         lv_obj_set_style_text_color(pct, kPref[i], 0);
         // 显式按条中心对齐（条宽 100：L 中心 70 / M 184 / R 298，相对屏幕中心偏移）
-        // 条顶 y = 448-46-16 = 386，28px 标签上移 52 → 居中于条上方
-        lv_obj_align(pct, LV_ALIGN_BOTTOM_MID, -114 + i * 114, -52);
+        // 条顶 y = 448-46-16 = 386，28px 标签上移 72 → 348..376，与条间隙 10px
+        lv_obj_align(pct, LV_ALIGN_BOTTOM_MID, -114 + i * 114, -72);
         batt_pct_[i] = pct;
         static const char* kTagStatic[3] = {"L", "M", "R"};
         lv_label_set_text(pct, kTagStatic[i]);
