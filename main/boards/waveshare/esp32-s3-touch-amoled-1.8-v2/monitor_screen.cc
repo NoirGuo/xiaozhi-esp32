@@ -30,16 +30,17 @@ static const char* TAG = "MonitorScreen";
 // WPM 块与连接区之间的空隙
 #define TOP_GAP 14
 // WPM 折线：高 45 ≈ 连接区总高 68 的 2/3，与连接区垂直水平居中
-#define CHART_W 154
+// CHART_W 140：为 24px 标签 + 36px×3 数字让出水平空间（数字区 66px 止于 x=280 < 连接区 288）
+#define CHART_W 140
 #define CHART_H 45
 #define CHART_X MARGIN
 #define CHART_Y (CONN_Y + (CONN_H * 2 + CONN_GAP - CHART_H) / 2)  // 32
-// WPM 标签 / 数字（水平排列，间距 5）
-#define WPM_LABEL_X (CHART_X + CHART_W + 5)
+// WPM 标签 / 数字（水平排列，间距 4/2）
+#define WPM_LABEL_X (CHART_X + CHART_W + 4)
 #define WPM_LABEL_Y (CHART_Y + CHART_H / 2 - 12)  // 24px 字，垂直居中
-#define WPM_NUM_X (WPM_LABEL_X + 40 + 5)
+#define WPM_NUM_X (WPM_LABEL_X + 48 + 2)
 #define WPM_NUM_Y (CHART_Y + CHART_H / 2 - 18)    // 36px 字，垂直居中
-#define WPM_NUM_W 48
+#define WPM_NUM_W 66                               // 3 位 36px 数字上限
 
 // 折线纵向映射：y = H - v*H/200（纵坐标上限 200，无刻度）
 #define WPM_CHART_TOP 200
@@ -299,18 +300,20 @@ void MonitorScreen::BuildWidgets() {
     lv_obj_set_pos(wpm_dot_, CHART_X, CHART_Y);
     lv_obj_add_flag(wpm_dot_, LV_OBJ_FLAG_HIDDEN);
 
-    // --- 顶部 WPM 标签 + 数字（字号 130%：标签 24px、数字 36px） ---
+    // --- 顶部 WPM 标签 + 数字（LVGL 9 transform_scale 基数 2048=100%） ---
+    // 效果图像素字号（LV_FONT_DEFAULT≈14px）：标签 24px → 24/14*2048=3511
     wpm_label_ = lv_label_create(screen_);
     lv_obj_set_style_text_color(wpm_label_, kDim, 0);
     lv_obj_set_style_text_font(wpm_label_, LV_FONT_DEFAULT, 0);
-    lv_obj_set_style_transform_scale(wpm_label_, 205, 0);  // 30px→≈24px（256=100%）
+    lv_obj_set_style_transform_scale(wpm_label_, 3511, 0);  // 24px 效果
     lv_obj_set_pos(wpm_label_, WPM_LABEL_X, WPM_LABEL_Y);
     lv_label_set_text(wpm_label_, "WPM");
 
+    // 数字 36px 效果 → 36/14*2048=5266（约 130%）
     wpm_num_ = lv_label_create(screen_);
     lv_obj_set_style_text_color(wpm_num_, kFg, 0);
     lv_obj_set_style_text_font(wpm_num_, LV_FONT_DEFAULT, 0);
-    lv_obj_set_style_transform_scale(wpm_num_, 307, 0);  // 30px→≈36px（256=100%）
+    lv_obj_set_style_transform_scale(wpm_num_, 5266, 0);  // 36px 效果
     lv_obj_set_pos(wpm_num_, WPM_NUM_X, WPM_NUM_Y);
     lv_obj_set_width(wpm_num_, WPM_NUM_W);  // 3 位数字上限
     lv_obj_set_style_text_align(wpm_num_, LV_TEXT_ALIGN_LEFT, 0);
@@ -329,7 +332,7 @@ void MonitorScreen::BuildWidgets() {
     conn_usb_label_ = lv_label_create(conn_usb_);
     lv_obj_center(conn_usb_label_);
     lv_obj_set_style_text_font(conn_usb_label_, LV_FONT_DEFAULT, 0);
-    lv_obj_set_style_transform_scale(conn_usb_label_, 150, 0);  // ~24px
+    lv_obj_set_style_transform_scale(conn_usb_label_, 2341, 0);  // 16px 效果
     lv_obj_set_style_text_color(conn_usb_label_, kDim, 0);
     lv_label_set_text(conn_usb_label_, "USB");
 
@@ -345,22 +348,22 @@ void MonitorScreen::BuildWidgets() {
     conn_ble_label_ = lv_label_create(conn_ble_);
     lv_obj_center(conn_ble_label_);
     lv_obj_set_style_text_font(conn_ble_label_, LV_FONT_DEFAULT, 0);
-    lv_obj_set_style_transform_scale(conn_ble_label_, 150, 0);
+    lv_obj_set_style_transform_scale(conn_ble_label_, 2341, 0);  // 16px 效果
     lv_obj_set_style_text_color(conn_ble_label_, kDim, 0);
     lv_label_set_text(conn_ble_label_, "BLE");
 
-    // --- 中央三行 ---
+    // --- 中央三行（LVGL9 transform_scale 基数 2048=100%） ---
     layer_label_ = lv_label_create(screen_);
     lv_obj_set_style_text_color(layer_label_, kAccent, 0);
     lv_obj_set_style_text_font(layer_label_, LV_FONT_DEFAULT, 0);
-    lv_obj_set_style_transform_scale(layer_label_, 250, 0);
+    lv_obj_set_style_transform_scale(layer_label_, 3218, 0);  // 22px 效果
     lv_obj_align(layer_label_, LV_ALIGN_CENTER, 0, LAYER_Y - SCREEN_H / 2);
     lv_label_set_text(layer_label_, "BASE");
 
     typed_label_ = lv_label_create(screen_);
     lv_obj_set_style_text_color(typed_label_, kFg, 0);
     lv_obj_set_style_text_font(typed_label_, LV_FONT_DEFAULT, 0);
-    lv_obj_set_style_transform_scale(typed_label_, 200, 0);
+    lv_obj_set_style_transform_scale(typed_label_, 2633, 0);  // 18px 效果
     lv_obj_align(typed_label_, LV_ALIGN_CENTER, 0, TYPED_Y - SCREEN_H / 2);
     lv_label_set_text(typed_label_, "");
 
@@ -374,7 +377,8 @@ void MonitorScreen::BuildWidgets() {
         lv_obj_set_style_radius(chip, 6, 0);
         lv_obj_set_style_border_width(chip, 1, 0);
         lv_obj_set_style_border_color(chip, kDim, 0);
-        lv_obj_align(chip, LV_ALIGN_CENTER, -3 * 74 + i * 74 + 37, MODS_Y - SCREEN_H / 2);
+        // 4 chip 总宽 66*4+8*3=288 → 左缘 -144 → chip 中心 -144+74i+33=-111+74i（整体居中）
+        lv_obj_align(chip, LV_ALIGN_CENTER, -111 + i * 74, MODS_Y - SCREEN_H / 2);
 
         lv_obj_t* lab = lv_label_create(chip);
         lv_obj_center(lab);
