@@ -38,7 +38,7 @@ static const char* TAG = "MonitorScreen";
 // WPM 标签 / 数字（水平排列；垂直居中于折线高 45）
 #define WPM_LABEL_X (CHART_X + CHART_W + 4)
 #define WPM_LABEL_Y (CHART_Y + CHART_H / 2 - 8)    // 16px 字，垂直居中
-#define WPM_NUM_X (WPM_LABEL_X + 36 + 4)
+#define WPM_NUM_X (WPM_LABEL_X + 56 + 12)
 #define WPM_NUM_Y (CHART_Y + CHART_H / 2 - 14)     // 28px 字，垂直居中
 #define WPM_NUM_W 66                               // 3 位数字上限
 
@@ -349,13 +349,13 @@ void MonitorScreen::BuildWidgets() {
     // --- 中央三行 ---
     layer_label_ = lv_label_create(screen_);
     lv_obj_set_style_text_color(layer_label_, kAccent, 0);
-    lv_obj_set_style_text_font(layer_label_, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(layer_label_, &lv_font_montserrat_28, 0);
     lv_obj_align(layer_label_, LV_ALIGN_CENTER, 0, LAYER_Y - SCREEN_H / 2);
     lv_label_set_text(layer_label_, "BASE");
 
     typed_label_ = lv_label_create(screen_);
     lv_obj_set_style_text_color(typed_label_, kFg, 0);
-    lv_obj_set_style_text_font(typed_label_, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(typed_label_, &lv_font_montserrat_16, 0);
     lv_obj_align(typed_label_, LV_ALIGN_CENTER, 0, TYPED_Y - SCREEN_H / 2);
     lv_label_set_text(typed_label_, "");
 

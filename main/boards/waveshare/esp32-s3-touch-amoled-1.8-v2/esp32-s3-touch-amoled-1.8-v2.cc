@@ -389,7 +389,8 @@ public:
         boot_button_(BOOT_BUTTON_GPIO) {
         // 强制使用 dark 主题（黑底）。LcdDisplay 构造时从 NVS 命名空间 "display"
         // 读 key "theme"（默认 "light"），必须在 InitializeDisplay() 之前写入。
-        Settings("display", false).SetString("theme", "dark");
+        // 注意：Settings 第二参数 read_write=true 才是可读写（false=只读，SetString 会被忽略）
+        Settings("display", true).SetString("theme", "dark");
         InitializePowerSaveTimer();
         InitializeCodecI2c();
         InitializeTca9554();
