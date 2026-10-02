@@ -5,6 +5,9 @@
 #include "board.h"
 #include "display.h"
 
+// 自定义 60px Montserrat Bold 字体（层名用），直接 include 避免改 CMakeLists
+#include "lv_font_montserrat_bold_60.c"
+
 #include "esp_log.h"
 #include "esp_timer.h"
 
@@ -339,7 +342,7 @@ void MonitorScreen::BuildWidgets() {
     // --- 中央：层名 60px 大字居中 ---
     layer_label_ = lv_label_create(screen_);
     lv_obj_set_style_text_color(layer_label_, kAccent, 0);
-    lv_obj_set_style_text_font(layer_label_, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_font(layer_label_, &lv_font_montserrat_bold_60, 0);
     lv_obj_align(layer_label_, LV_ALIGN_CENTER, 0, LAYER_Y - SCREEN_H / 2);
     lv_label_set_text(layer_label_, "BASE");
 
