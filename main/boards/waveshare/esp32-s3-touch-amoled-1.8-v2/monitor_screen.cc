@@ -189,9 +189,17 @@ void MonitorScreen::SwipeTimerCb(lv_timer_t* t) {
         }
         return;
     }
-    if (lv_indev_get_gesture_dir(indev) == LV_DIR_LEFT) {
+    // 【去抖】LVGL 手势方向在滑动结束后保持到下一次触摸，100ms 轮询会连续触发
+    // Toggle（曾一次左滑连切 5 次界面）。只在方向从非 LEFT 变为 LEFT 时触发一次，
+    // 方向复位（用户再次触摸/滑动）后才允许下次触发。
+    static lv_dir_t last_dir = LV_DIR_NONE;
+    lv_dir_t dir = lv_indev_get_gesture_dir(indev);
+    if (dir == LV_DIR_LEFT && last_dir != LV_DIR_LEFT) {
+        last_dir = LV_DIR_LEFT;
         ESP_LOGI(TAG, "gesture: LEFT detected, toggling");
         KeyboardMonitor::GetInstance().Toggle();
+    } else if (dir != LV_DIR_LEFT) {
+        last_dir = dir;
     }
 }
 
@@ -218,7 +226,9 @@ void MonitorScreen::PushWpm(uint8_t wpm) {
 }
 
 void MonitorScreen::RebuildWpmChart() {
-    if (!wpm_chart_line_ || wpm_hist_cnt_ == 0) {
+    // 少于 2 个点不能连线：pts[i].x = CHART_W*i/(n-1) 在 n==1 时是 0/0 除零
+    //（连续左滑 Show/Hide 会 ClearWpmChart 清空历史，首个新点到达时恰好 n==1）
+    if (!wpm_chart_line_ || wpm_hist_cnt_ < 2) {
         return;
     }
     static lv_point_precise_t pts[kHistMax];
