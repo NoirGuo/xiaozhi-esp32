@@ -57,6 +57,18 @@ static const char* TAG = "MonitorScreen";
 // 层名自动缩放（240 屏）：60px 粗体 → 超 200px 降 48px 粗体 → 超 200px 用内置 36px
 #define LAYER_FONT_MAX_W 200
 
+// 自测文本宽度（LVGL 9 稳定 API lv_font_get_glyph_dsc，规避 lv_txt_/lv_text_ 版本命名差异）
+static lv_coord_t FontTextWidth(const char* text, const lv_font_t* font) {
+    lv_coord_t w = 0;
+    for (const char* p = text; *p; p++) {
+        lv_font_glyph_dsc_t dsc;
+        if (lv_font_get_glyph_dsc(font, &dsc, (uint8_t)*p, 0)) {
+            w += dsc.adv_w;
+        }
+    }
+    return w;
+}
+
 static const lv_font_t* PickLayerFont(const char* name) {
     if (!name || name[0] == '\0') {
         return &lv_font_montserrat_bold_60;
@@ -64,10 +76,8 @@ static const lv_font_t* PickLayerFont(const char* name) {
     static const lv_font_t* kFonts[3] = {&lv_font_montserrat_bold_60,
                                          &lv_font_montserrat_bold_48,
                                          &lv_font_montserrat_36};
-    size_t n = strlen(name);
     for (auto f : kFonts) {
-        lv_coord_t w = lv_text_get_width(name, f, 0, 0, n, LV_TEXT_FLAG_NONE);
-        if (w <= LAYER_FONT_MAX_W) {
+        if (FontTextWidth(name, f) <= LAYER_FONT_MAX_W) {
             return f;
         }
     }
@@ -534,4 +544,3 @@ void MonitorScreen::UpdateWidgets() {
         // 标签只显示 L/M/R（静态），不刷新百分比
     }
 }
-//（注：内容由AI生成）
