@@ -9,15 +9,13 @@
 #include "led/single_led.h"
 #include "assets/lang_config.h"
 #include "power_manager.h"
-
+#include "keyboard_monitor.h"
+#include "mcp_server.h"
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
-
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
-
 #define TAG "ZHENGCHEN_1_54TFT_WIFI"
-
 class ZHENGCHEN_1_54TFT_WIFI : public WifiBoard {
 private:
     Button boot_button_;
@@ -28,13 +26,11 @@ private:
     PowerManager* power_manager_;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
-
     void InitializePowerManager() {
         power_manager_ = new PowerManager(GPIO_NUM_9);
         power_manager_->OnTemperatureChanged([this](float chip_temp) {
             display_->UpdateHighTempWarning(chip_temp);
         });
-
         power_manager_->OnChargingStatusChanged([this](bool is_charging) {
             if (is_charging) {
                 power_save_timer_->SetEnabled(false);
@@ -46,24 +42,23 @@ private:
         });
     
     }
-
     void InitializePowerSaveTimer() {
         rtc_gpio_init(GPIO_NUM_2);
         rtc_gpio_set_direction(GPIO_NUM_2, RTC_GPIO_MODE_OUTPUT_ONLY);
         rtc_gpio_set_level(GPIO_NUM_2, 1);
-
         power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
         power_save_timer_->OnEnterSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(true);
             GetBacklight()->SetBrightness(1);
+            KeyboardMonitor::GetInstance().Stop();   // 键盘监控：休眠停扫描并隐藏界面
         });
         power_save_timer_->OnExitSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(false);
             GetBacklight()->RestoreBrightness();
+            KeyboardMonitor::GetInstance().Start();  // 键盘监控：唤醒恢复扫描
         });
         power_save_timer_->SetEnabled(true);
     }
-
     void InitializeSpi() {
         spi_bus_config_t buscfg = {};
         buscfg.mosi_io_num = DISPLAY_SDA;
@@ -74,7 +69,6 @@ private:
         buscfg.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
         ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
     }
-
     void InitializeButtons() {
         
         boot_button_.OnClick([this]() {
@@ -86,7 +80,6 @@ private:
             }
             app.ToggleChatState();
         });
-
         // 设置开机按钮的长按事件（直接进入配网模式）
         boot_button_.OnLongPress([this]() {
             // 唤醒电源保存定时器
@@ -100,7 +93,6 @@ private:
             // 重置WiFi配置以确保进入配网模式
             EnterWifiConfigMode();
         });
-
         volume_up_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
             auto codec = GetAudioCodec();
@@ -111,13 +103,16 @@ private:
             codec->SetOutputVolume(volume);
             GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume/10));
         });
-
         volume_up_button_.OnLongPress([this]() {
             power_save_timer_->WakeUp();
             GetAudioCodec()->SetOutputVolume(100);
             GetDisplay()->ShowNotification(Lang::Strings::MAX_VOLUME);
         });
-
+        // 双击音量+：切换键盘监听界面（单击/长按音量功能不受影响）
+        volume_up_button_.OnDoubleClick([this]() {
+            power_save_timer_->WakeUp();
+            KeyboardMonitor::GetInstance().Toggle();
+        });
         volume_down_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
             auto codec = GetAudioCodec();
@@ -128,14 +123,12 @@ private:
             codec->SetOutputVolume(volume);
             GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume/10));
         });
-
         volume_down_button_.OnLongPress([this]() {
             power_save_timer_->WakeUp();
             GetAudioCodec()->SetOutputVolume(0);
             GetDisplay()->ShowNotification(Lang::Strings::MUTED);
         });
     }
-
     void InitializeSt7789Display() {
         ESP_LOGD(TAG, "Install panel IO");
         esp_lcd_panel_io_spi_config_t io_config = {};
@@ -147,7 +140,6 @@ private:
         io_config.lcd_cmd_bits = 8;
         io_config.lcd_param_bits = 8;
         ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI3_HOST, &io_config, &panel_io_));
-
         ESP_LOGD(TAG, "Install LCD driver");
         esp_lcd_panel_dev_config_t panel_config = {};
         panel_config.reset_gpio_num = DISPLAY_RES;
@@ -159,15 +151,20 @@ private:
         ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_, DISPLAY_SWAP_XY));
         ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
         ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_, true));
-
         display_ = new ZHENGCHEN_LcdDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, 
             DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
         display_->SetupHighTempWarningPopup();
     }
-
     void InitializeTools() {
+        auto &mcp_server = McpServer::GetInstance();
+        mcp_server.AddTool("keyboard_monitor_toggle",
+            "切换键盘状态监控界面（显示/隐藏键盘 WPM、层、修饰键、电量等状态）。"
+            "用户说'打开键盘监控'、'查看键盘状态'时调用，不需要参数。",
+            PropertyList(), [](const PropertyList&) {
+                KeyboardMonitor::GetInstance().Toggle();
+                return true;
+            });
     }
-
 public:
     ZHENGCHEN_1_54TFT_WIFI() :
         boot_button_(BOOT_BUTTON_GPIO),
@@ -180,8 +177,9 @@ public:
         InitializeSt7789Display();  
         InitializeTools();
         GetBacklight()->RestoreBrightness();
+        // 键盘监控：启动 BLE 初始化与扫描任务（小智默认浅色主题，不改）
+        KeyboardMonitor::GetInstance().Start();
     }
-
     // 获取音频编解码器
     virtual AudioCodec* GetAudioCodec() override {
         // 静态实例化NoAudioCodecSimplex类
@@ -190,7 +188,6 @@ public:
         // 返回音频编解码器
         return &audio_codec;
     }
-
     virtual Display* GetDisplay() override {
         return display_;
     }
@@ -199,7 +196,6 @@ public:
         static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
         return &backlight;
     }
-
     virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {
         static bool last_discharging = false;
         charging = power_manager_->IsCharging();
@@ -211,12 +207,10 @@ public:
         level = std::max<uint32_t>(power_manager_->GetBatteryLevel(), 20);
         return true;
     }
-
     virtual bool GetTemperature(float& esp32temp)  override {
         esp32temp = power_manager_->GetTemperature();
         return true;
     }
-
     virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
         if (level != PowerSaveLevel::LOW_POWER) {
             power_save_timer_->WakeUp();
@@ -224,5 +218,5 @@ public:
         WifiBoard::SetPowerSaveLevel(level);
     }
 };
-
 DECLARE_BOARD(ZHENGCHEN_1_54TFT_WIFI);
+//（注：内容由AI生成）

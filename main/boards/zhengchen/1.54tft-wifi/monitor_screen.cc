@@ -1,0 +1,537 @@
+#include "monitor_screen.h"
+
+#include "keyboard_monitor.h"
+
+#include "board.h"
+#include "display.h"
+
+// 自定义 60px / 48px Montserrat Bold 字体（层名用），直接 include 避免改 CMakeLists
+#include "lv_font_montserrat_bold_60.c"
+#include "lv_font_montserrat_bold_48.c"
+
+#include "esp_log.h"
+#include "esp_timer.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include <cstdio>
+#include <cstring>
+
+static const char* TAG = "MonitorScreen";
+
+#define SCREEN_W 240
+#define SCREEN_H 240
+#define MARGIN 8
+
+// ---- v1.54 布局（240×240 直角屏，zhengchen 1.54tft-wifi）----
+// 顶部连接芯片：USB 左 / BLE 右，同一行，字号 24
+#define CONN_Y 6
+#define CONN_W 80
+#define CONN_H 30
+#define USB_X MARGIN
+#define BLE_X (SCREEN_W - MARGIN - CONN_W)
+
+// WPM 行：WPM 标签（左）+ 折线（右），整体居中，数字已取消
+// 实测 Montserrat 24px "WPM"=66px；总宽 = 66 + 10 + 100 = 176 → 左缘 (240-176)/2=32
+#define WPM_W 66
+#define WPM_CHART_GAP 10
+#define CHART_W 100
+#define CHART_H 32
+#define CHART_X (WPM_LABEL_X + WPM_W + WPM_CHART_GAP)   // 108
+#define CHART_Y 44
+#define WPM_LABEL_X 32
+#define WPM_LINE_Y (CHART_Y + CHART_H / 2 - 14)          // 24px 字垂直居中
+
+// 折线纵向映射：y = H - v*H/150（纵坐标上限 150，无刻度）
+#define WPM_CHART_TOP 150
+
+// 垂直三等分：WPM 行 → 层名 → 修饰键
+#define LAYER_Y 126
+#define MODS_Y 166
+
+// 电量分色（>30 绿 / 10-30 黄 / ≤10 红）
+#define BATT_LOW 10
+#define BATT_MID 30
+
+// 层名自动缩放（240 屏）：60px 粗体 → 超 200px 降 48px 粗体 → 超 200px 用内置 36px
+#define LAYER_FONT_MAX_W 200
+
+static const lv_font_t* PickLayerFont(const char* name) {
+    if (!name || name[0] == '\0') {
+        return &lv_font_montserrat_bold_60;
+    }
+    static const lv_font_t* kFonts[3] = {&lv_font_montserrat_bold_60,
+                                         &lv_font_montserrat_bold_48,
+                                         &lv_font_montserrat_36};
+    size_t n = strlen(name);
+    for (auto f : kFonts) {
+        lv_coord_t w = lv_text_get_width(name, f, 0, 0, n, LV_TEXT_FLAG_NONE);
+        if (w <= LAYER_FONT_MAX_W) {
+            return f;
+        }
+    }
+    return &lv_font_montserrat_36;   // 极端超长兜底
+}
+
+static const lv_color_t kFg = lv_color_hex(0xFFFFFF);
+static const lv_color_t kDim = lv_color_hex(0x9AA0A6);
+static const lv_color_t kAccent = lv_color_hex(0x4FC3F7);
+static const lv_color_t kBarTrack = lv_color_hex(0x2A2A2A);
+static const lv_color_t kGreen = lv_color_hex(0x81C784);
+static const lv_color_t kYellow = lv_color_hex(0xFFD54F);
+static const lv_color_t kRed = lv_color_hex(0xE57373);
+static const lv_color_t kBlue = lv_color_hex(0x64B5F6);
+static const lv_color_t kOrange = lv_color_hex(0xFFB74D);
+static const lv_color_t kChipBg = lv_color_hex(0x141414);
+static const lv_color_t kChipOnBg = lv_color_hex(0x14242E);
+static const lv_color_t kChipBorder = lv_color_hex(0x555B66);
+static const lv_color_t kChipOnBorder = lv_color_hex(0x4FC3F7);
+
+MonitorScreen& MonitorScreen::GetInstance() {
+    static MonitorScreen instance;
+    return instance;
+}
+
+// ---------- 显示 / 隐藏 ----------
+void MonitorScreen::Show() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (shown_) {
+        return;
+    }
+    auto display = Board::GetInstance().GetDisplay();
+    if (!display) {
+        return;
+    }
+    DisplayLockGuard guard(display);
+
+    prev_screen_ = lv_screen_active();
+    screen_ = lv_obj_create(nullptr);
+    lv_obj_set_size(screen_, SCREEN_W, SCREEN_H);
+    lv_obj_set_style_bg_color(screen_, lv_color_hex(0x000000), 0);
+    BuildWidgets();
+    lv_screen_load(screen_);
+    shown_ = true;
+
+    refresh_timer_ = lv_timer_create(RefreshTimerCb, 500, this);
+    return_timer_ = lv_timer_create(ReturnTimerCb,
+                                    CONFIG_KEYBOARD_MONITOR_TIMEOUT_SEC * 1000, this);
+    lv_timer_set_repeat_count(return_timer_, 1);
+    ESP_LOGI(TAG, "monitor screen shown");
+}
+
+void MonitorScreen::Hide() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!shown_) {
+        return;
+    }
+    auto display = Board::GetInstance().GetDisplay();
+    if (display) {
+        DisplayLockGuard guard(display);
+        if (refresh_timer_) {
+            lv_timer_del(refresh_timer_);
+            refresh_timer_ = nullptr;
+        }
+        if (return_timer_) {
+            lv_timer_del(return_timer_);
+            return_timer_ = nullptr;
+        }
+        if (prev_screen_) {
+            lv_screen_load(prev_screen_);
+        }
+        if (screen_) {
+            lv_obj_del(screen_);
+            screen_ = nullptr;
+        }
+    }
+    shown_ = false;
+    ESP_LOGI(TAG, "monitor screen hidden");
+}
+
+bool MonitorScreen::IsShown() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return shown_;
+}
+
+// ---------- 手势轮询（左滑切换） ----------
+void MonitorScreen::StartGesturePolling() {
+    // 【启动期错峰】本函数由扫描任务在 BLE 初始化后调用。启动早期（约 3.9~4.5s）
+    // WiFi/BLE 的 phy 校准会写一次 NVS（flash 写），此时 CPU1 若正在执行
+    // LVGL 的 flash 代码（如本 timer 回调），双核共享 flash cache 会取指失败
+    // → IllegalInstruction panic（PC 落在 0x4202xxxx flash 映射区）→ 重启循环。
+    // 这里在拿 LVGL 锁之前先让出 5 秒，等校准保存窗口过去再建 timer，
+    // 校准数据保存成功之后后续启动不再重校准，问题自愈。
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    ESP_LOGI(TAG, "gesture: enter StartGesturePolling");
+    auto& self = MonitorScreen::GetInstance();
+    ESP_LOGI(TAG, "gesture: GetInstance OK");
+    auto display = Board::GetInstance().GetDisplay();
+    ESP_LOGI(TAG, "gesture: display=%s", display ? "ok" : "NULL");
+    if (!display) {
+        return;
+    }
+    ESP_LOGI(TAG, "gesture: taking lock");
+    DisplayLockGuard guard(display);
+    ESP_LOGI(TAG, "gesture: lock acquired");
+    if (!gesture_timer_) {
+        ESP_LOGI(TAG, "gesture polling: creating 100ms timer");
+        gesture_timer_ = lv_timer_create(SwipeTimerCb, 100, &self);
+        if (gesture_timer_) {
+            ESP_LOGI(TAG, "gesture polling started");
+        } else {
+            ESP_LOGE(TAG, "gesture polling: lv_timer_create FAILED");
+        }
+    } else {
+        ESP_LOGI(TAG, "gesture polling: timer already exists");
+    }
+}
+
+void MonitorScreen::SwipeTimerCb(lv_timer_t* t) {
+    (void)t;
+    // 【探针】LVGL 任务存活打点：每 10 秒一条（若日志无此条，说明 LVGL 任务未运行）
+    static uint32_t tick = 0;
+    if (++tick % 100 == 0) {
+        ESP_LOGI(TAG, "lvgl alive tick=%u", (unsigned)(tick / 100));
+    }
+    lv_indev_t* indev = lv_indev_get_next(nullptr);
+    while (indev) {
+        if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
+            break;
+        }
+        indev = lv_indev_get_next(indev);
+    }
+    if (!indev) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            ESP_LOGE(TAG, "gesture: no POINTER indev found");
+        }
+        return;
+    }
+    // 【去抖】LVGL 手势方向在滑动结束后保持到下一次触摸，100ms 轮询会连续触发
+    // Toggle（曾一次左滑连切 5 次界面）。只在方向从非 LEFT 变为 LEFT 时触发一次，
+    // 方向复位（用户再次触摸/滑动）后才允许下次触发。
+    static lv_dir_t last_dir = LV_DIR_NONE;
+    lv_dir_t dir = lv_indev_get_gesture_dir(indev);
+    if (dir == LV_DIR_LEFT && last_dir != LV_DIR_LEFT) {
+        last_dir = LV_DIR_LEFT;
+        ESP_LOGI(TAG, "gesture: LEFT detected, toggling");
+        KeyboardMonitor::GetInstance().Toggle();
+    } else if (dir != LV_DIR_LEFT) {
+        last_dir = dir;
+    }
+}
+
+// ---------- 定时刷新 ----------
+// LVGL 9.5：lv_timer_t 结构体为私有（lv_timer_private.h），必须用公开访问器取 user_data
+void MonitorScreen::RefreshTimerCb(lv_timer_t* t) {
+    static_cast<MonitorScreen*>(lv_timer_get_user_data(t))->UpdateWidgets();
+}
+
+void MonitorScreen::ReturnTimerCb(lv_timer_t* t) {
+    auto* self = static_cast<MonitorScreen*>(lv_timer_get_user_data(t));
+    self->Hide();
+    KeyboardMonitor::GetInstance().SetActive(false);
+    KeyboardMonitor::GetInstance().RequestScanStop();  // 30s 自动返回：请求停扫
+}
+
+// ---------- WPM 历史缓冲 ----------
+void MonitorScreen::PushWpm(uint8_t wpm) {
+    wpm_hist_[wpm_hist_head_] = wpm;
+    wpm_hist_head_ = (wpm_hist_head_ + 1) % kHistMax;
+    if (wpm_hist_cnt_ < kHistMax) {
+        wpm_hist_cnt_++;
+    }
+}
+
+void MonitorScreen::RebuildWpmChart() {
+    // 少于 2 个点不能连线：pts[i].x = CHART_W*i/(n-1) 在 n==1 时是 0/0 除零
+    //（连续左滑 Show/Hide 会 ClearWpmChart 清空历史，首个新点到达时恰好 n==1）
+    if (!wpm_chart_line_ || wpm_hist_cnt_ < 2) {
+        return;
+    }
+    static lv_point_precise_t pts[kHistMax];
+    uint8_t n = wpm_hist_cnt_;
+    uint8_t start = (wpm_hist_head_ + kHistMax - n) % kHistMax;
+    for (uint8_t i = 0; i < n; i++) {
+        uint8_t v = wpm_hist_[(start + i) % kHistMax];
+        int32_t y = CHART_H - (int32_t)v * CHART_H / WPM_CHART_TOP;
+        if (y < 0) {
+            y = 0;
+        }
+        pts[i] = (lv_point_precise_t){CHART_W * i / (n - 1), y};
+    }
+    lv_line_set_points(wpm_chart_line_, pts, n);
+    lv_line_set_points(wpm_chart_area_, pts, n);
+
+    // 当前值圆点：贴主线末点（wpm_dot_ 挂在 screen_ 上，需加折线区偏移）
+    if (lv_obj_is_valid(wpm_dot_)) {
+        lv_obj_set_pos(wpm_dot_, CHART_X + pts[n - 1].x - 3, CHART_Y + pts[n - 1].y - 3);
+    }
+}
+
+void MonitorScreen::ClearWpmChart() {
+    wpm_hist_cnt_ = 0;
+    wpm_hist_head_ = 0;
+    lv_line_set_points(wpm_chart_line_, nullptr, 0);
+    lv_line_set_points(wpm_chart_area_, nullptr, 0);
+    if (lv_obj_is_valid(wpm_dot_)) {
+        lv_obj_add_flag(wpm_dot_, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+// ---------- 连接芯片样式 ----------
+void MonitorScreen::SetConnChip(lv_obj_t* chip, lv_obj_t* label, bool on,
+                                const char* text) {
+    lv_label_set_text(label, text);
+    lv_obj_set_style_bg_color(chip, on ? kChipOnBg : kChipBg, 0);
+    lv_obj_set_style_border_color(chip, on ? kChipOnBorder : kChipBorder, 0);
+    lv_obj_set_style_text_color(label, on ? kFg : kDim, 0);
+}
+
+// ---------- 控件 ----------
+void MonitorScreen::BuildWidgets() {
+    lv_obj_set_style_pad_all(screen_, 0, 0);
+
+    // --- 顶部 WPM 折线图（两层线模拟渐变面积 + 当前值圆点） ---
+    wpm_chart_area_ = lv_line_create(screen_);
+    lv_obj_set_size(wpm_chart_area_, CHART_W, CHART_H);
+    lv_obj_set_pos(wpm_chart_area_, CHART_X, CHART_Y);
+    lv_obj_set_style_line_color(wpm_chart_area_, kAccent, 0);
+    lv_obj_set_style_line_width(wpm_chart_area_, 10, 0);
+    lv_obj_set_style_opa(wpm_chart_area_, 36, 0);
+    lv_obj_set_style_line_rounded(wpm_chart_area_, true, 0);
+
+    wpm_chart_line_ = lv_line_create(screen_);
+    lv_obj_set_size(wpm_chart_line_, CHART_W, CHART_H);
+    lv_obj_set_pos(wpm_chart_line_, CHART_X, CHART_Y);
+    lv_obj_set_style_line_color(wpm_chart_line_, kAccent, 0);
+    lv_obj_set_style_line_width(wpm_chart_line_, 2, 0);
+    lv_obj_set_style_line_rounded(wpm_chart_line_, true, 0);
+
+    wpm_dot_ = lv_obj_create(screen_);
+    lv_obj_remove_style_all(wpm_dot_);
+    lv_obj_set_size(wpm_dot_, 6, 6);
+    lv_obj_set_style_bg_color(wpm_dot_, kAccent, 0);
+    lv_obj_set_style_bg_opa(wpm_dot_, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(wpm_dot_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_pos(wpm_dot_, CHART_X, CHART_Y);
+    lv_obj_add_flag(wpm_dot_, LV_OBJ_FLAG_HIDDEN);
+
+    // --- WPM 标签 + 数字（横向排列，24px） ---
+    wpm_label_ = lv_label_create(screen_);
+    lv_obj_set_style_text_color(wpm_label_, kDim, 0);
+    lv_obj_set_style_text_font(wpm_label_, &lv_font_montserrat_24, 0);
+    lv_obj_set_pos(wpm_label_, WPM_LABEL_X, WPM_LINE_Y);
+    lv_label_set_text(wpm_label_, "WPM");
+
+    wpm_num_ = lv_label_create(screen_);
+    lv_obj_set_style_text_color(wpm_num_, kFg, 0);
+    lv_obj_set_style_text_font(wpm_num_, &lv_font_montserrat_24, 0);
+    lv_obj_set_pos(wpm_num_, WPM_LABEL_X, WPM_LINE_Y);
+    lv_label_set_text(wpm_num_, "--");
+    lv_obj_add_flag(wpm_num_, LV_OBJ_FLAG_HIDDEN);   // 数字已取消显示
+
+    // --- 顶部：USB 左 / BLE 右，同一行，字号 24 ---
+    conn_usb_ = lv_obj_create(screen_);
+    lv_obj_remove_style_all(conn_usb_);
+    lv_obj_set_size(conn_usb_, CONN_W, CONN_H);
+    lv_obj_set_pos(conn_usb_, USB_X, CONN_Y);
+    lv_obj_set_style_bg_color(conn_usb_, kChipBg, 0);
+    lv_obj_set_style_bg_opa(conn_usb_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(conn_usb_, kChipBorder, 0);
+    lv_obj_set_style_border_width(conn_usb_, 1, 0);
+    lv_obj_set_style_radius(conn_usb_, 8, 0);
+    conn_usb_label_ = lv_label_create(conn_usb_);
+    lv_obj_center(conn_usb_label_);
+    lv_obj_set_style_text_font(conn_usb_label_, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(conn_usb_label_, kDim, 0);
+    lv_label_set_text(conn_usb_label_, "USB");
+
+    conn_ble_ = lv_obj_create(screen_);
+    lv_obj_remove_style_all(conn_ble_);
+    lv_obj_set_size(conn_ble_, CONN_W, CONN_H);
+    lv_obj_set_pos(conn_ble_, BLE_X, CONN_Y);
+    lv_obj_set_style_bg_color(conn_ble_, kChipBg, 0);
+    lv_obj_set_style_bg_opa(conn_ble_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(conn_ble_, kChipBorder, 0);
+    lv_obj_set_style_border_width(conn_ble_, 1, 0);
+    lv_obj_set_style_radius(conn_ble_, 8, 0);
+    conn_ble_label_ = lv_label_create(conn_ble_);
+    lv_obj_center(conn_ble_label_);
+    lv_obj_set_style_text_font(conn_ble_label_, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(conn_ble_label_, kDim, 0);
+    lv_label_set_text(conn_ble_label_, "BLE");
+
+    // --- 中央：层名大字居中（60px，超宽自动缩放） ---
+    layer_label_ = lv_label_create(screen_);
+    lv_obj_set_style_text_color(layer_label_, kAccent, 0);
+    lv_obj_set_style_text_font(layer_label_, &lv_font_montserrat_bold_60, 0);
+    lv_obj_align(layer_label_, LV_ALIGN_CENTER, 0, LAYER_Y - SCREEN_H / 2);
+    lv_label_set_text(layer_label_, "BASE");
+
+    // 输入字符行已取消（用户要求只显示层名大字）
+    typed_label_ = lv_label_create(screen_);
+    lv_obj_add_flag(typed_label_, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(typed_label_, "");
+
+    static const char* kMods[4] = {"CTRL", "SHIFT", "ALT", "GUI"};
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t* chip = lv_obj_create(screen_);
+        lv_obj_remove_style_all(chip);
+        lv_obj_set_size(chip, 54, 26);
+        lv_obj_set_style_bg_color(chip, kChipBg, 0);
+        lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(chip, 6, 0);
+        lv_obj_set_style_border_width(chip, 1, 0);
+        lv_obj_set_style_border_color(chip, kDim, 0);
+        // 4 chip 总宽 54*4+8*3=240 → 左缘 0 → chip 中心 -120+62i+27=-93+62i（整体居中）
+        lv_obj_align(chip, LV_ALIGN_CENTER, -93 + i * 62, MODS_Y - SCREEN_H / 2);
+
+        lv_obj_t* lab = lv_label_create(chip);
+        lv_obj_center(lab);
+        lv_obj_set_style_text_font(lab, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(lab, kDim, 0);
+        lv_label_set_text(lab, kMods[i]);
+        mod_chip_[i] = chip;
+        lv_obj_set_user_data(chip, lab);
+    }
+
+    // --- 底部三电量（L 蓝 / M 白 / R 橙，标签在条上方） ---
+    static const lv_color_t kPref[3] = {kBlue, kFg, kOrange};
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t* bar = lv_bar_create(screen_);
+        lv_obj_set_size(bar, 64, 12);
+        lv_obj_align(bar, i == 0 ? LV_ALIGN_BOTTOM_LEFT
+                                 : (i == 1 ? LV_ALIGN_BOTTOM_MID : LV_ALIGN_BOTTOM_RIGHT),
+                     i == 0 ? 18 : (i == 1 ? 0 : -18), -6);
+        lv_obj_set_style_bg_color(bar, kBarTrack, LV_PART_MAIN);
+        lv_obj_set_style_border_color(bar, kDim, LV_PART_MAIN);
+        lv_obj_set_style_border_width(bar, 1, LV_PART_MAIN);
+        lv_obj_set_style_radius(bar, 3, LV_PART_MAIN);
+        lv_obj_set_style_radius(bar, 3, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(bar, kGreen, LV_PART_INDICATOR);
+        lv_bar_set_range(bar, 0, 100);
+        lv_bar_set_value(bar, 0, LV_ANIM_OFF);
+        batt_bar_[i] = bar;
+
+        lv_obj_t* pct = lv_label_create(screen_);
+        lv_obj_set_style_text_font(pct, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_color(pct, kPref[i], 0);
+        // 显式按条中心对齐（条宽 64：L 中心 50 / M 120 / R 190，相对屏幕中心偏移）
+        // 条顶 y = 240-6-12 = 222，20px 标签上移 26 → 196..218，与条间隙 4px
+        lv_obj_align(pct, LV_ALIGN_BOTTOM_MID, -70 + i * 70, -26);
+        batt_pct_[i] = pct;
+        static const char* kTagStatic[3] = {"L", "M", "R"};
+        lv_label_set_text(pct, kTagStatic[i]);
+    }
+}
+
+// ---------- 刷新 ----------
+void MonitorScreen::UpdateWidgets() {
+    auto display = Board::GetInstance().GetDisplay();
+    if (!display) {
+        return;
+    }
+    DisplayLockGuard guard(display);
+    if (!screen_) {
+        return;
+    }
+
+    KeyboardStatus st = KeyboardMonitor::GetInstance().GetStatus();
+    int64_t now = esp_timer_get_time();
+    bool stale = !st.valid || (now - st.last_seen_us) > 15LL * 1000LL * 1000LL;
+
+    char buf[32];
+    if (stale) {
+        // 失联：数字 --、折线清空、芯片全暗、中央 WAITING
+        lv_label_set_text(wpm_num_, "--");
+        ClearWpmChart();
+        lv_label_set_text(layer_label_, "WAITING");
+        lv_obj_set_style_text_font(layer_label_, PickLayerFont("WAITING"), 0);
+        lv_label_set_text(typed_label_, "");
+        SetConnChip(conn_usb_, conn_usb_label_, false, "USB");
+        SetConnChip(conn_ble_, conn_ble_label_, false, "BLE");
+        for (int i = 0; i < 4; i++) {
+            lv_obj_t* lab = (lv_obj_t*)lv_obj_get_user_data(mod_chip_[i]);
+            if (lab) {
+                lv_obj_set_style_text_color(lab, kDim, 0);
+            }
+            lv_obj_set_style_bg_color(mod_chip_[i], kChipBg, 0);
+        }
+        for (int i = 0; i < 3; i++) {
+            lv_bar_set_value(batt_bar_[i], 0, LV_ANIM_OFF);
+            // 标签 L/M/R 静态，不刷新
+        }
+        return;
+    }
+
+    // --- WPM：推入历史并刷新折线 + 数字（3 位上限） ---
+    PushWpm(st.wpm);
+    RebuildWpmChart();
+    if (lv_obj_is_valid(wpm_dot_)) {
+        lv_obj_clear_flag(wpm_dot_, LV_OBJ_FLAG_HIDDEN);
+    }
+    snprintf(buf, sizeof(buf), "%d", st.wpm);
+    lv_label_set_text(wpm_num_, buf);
+
+    // --- 连接芯片：USB=flags bit2，BLE=flags bit4（BLE 显示 profile） ---
+    bool usb = (st.status_flags & 0x04) != 0;
+    bool ble = (st.status_flags & 0x10) != 0;
+    SetConnChip(conn_usb_, conn_usb_label_, usb, "USB");
+    if (ble) {
+        snprintf(buf, sizeof(buf), "BLE %d", st.profile);
+    } else {
+        snprintf(buf, sizeof(buf), "BLE");
+    }
+    SetConnChip(conn_ble_, conn_ble_label_, ble, buf);
+
+    // --- 中央行 1：层名（超宽自动缩放：60 → 48 → 36px） ---
+    const char* layer_text;
+    char fallback[16];
+    if (st.layer_name[0] != '\0') {
+        layer_text = st.layer_name;
+    } else {
+        snprintf(fallback, sizeof(fallback), "LAYER %d", st.layer);
+        layer_text = fallback;
+    }
+    lv_label_set_text(layer_label_, layer_text);
+    lv_obj_set_style_text_font(layer_label_, PickLayerFont(layer_text), 0);
+
+    // --- 中央行 2：输入字符（v2.2 载荷无该字段，行保持隐藏） ---
+    lv_label_set_text(typed_label_, "");
+
+    // --- 中央行 3：修饰键芯片点亮 ---
+    for (int i = 0; i < 4; i++) {
+        bool on = (st.mods & (1u << i)) != 0;
+        lv_obj_t* lab = (lv_obj_t*)lv_obj_get_user_data(mod_chip_[i]);
+        if (lab) {
+            lv_obj_set_style_text_color(lab, on ? kFg : kDim, 0);
+        }
+        lv_obj_set_style_bg_color(mod_chip_[i], on ? kChipOnBg : kChipBg, 0);
+        lv_obj_set_style_border_color(mod_chip_[i], on ? kAccent : kDim, 0);
+    }
+
+    // --- 底部三电量：L=byte5 / M=本机 / R=byte12 ---
+    uint8_t lv = st.battery_left;
+    uint8_t rv = st.battery_right;
+    int own = -1;
+    bool charging = false, discharging = false;
+    if (Board::GetInstance().GetBatteryLevel(own, charging, discharging)) {
+        if (own < 0) {
+            own = 0;
+        }
+    }
+    uint8_t levels[3] = {lv, uint8_t(own < 0 ? 0 : own), rv};
+    for (int i = 0; i < 3; i++) {
+        uint8_t level = levels[i];
+        bool unknown = (i == 1 && own < 0) || (i == 2 && rv == 0);
+        lv_bar_set_value(batt_bar_[i], unknown ? 0 : level, LV_ANIM_OFF);
+        lv_color_t color = level > BATT_MID ? kGreen
+                           : (level > BATT_LOW ? kYellow : kRed);
+        lv_obj_set_style_bg_color(batt_bar_[i], unknown ? kBarTrack : color,
+                                  LV_PART_INDICATOR);
+        // 标签只显示 L/M/R（静态），不刷新百分比
+    }
+}
+//（注：内容由AI生成）
