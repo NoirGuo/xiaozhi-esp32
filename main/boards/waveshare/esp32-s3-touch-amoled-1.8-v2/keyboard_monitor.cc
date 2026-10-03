@@ -165,7 +165,7 @@ void KeyboardMonitor::GapEventHandler(esp_gap_ble_cb_event_t event,
 // ---------- 广播解析 + 过滤 ----------
 void KeyboardMonitor::HandleAdv(
     const esp_ble_gap_cb_param_t::ble_scan_result_evt_param& rst) {
-    // 过滤 1：MAC 绑定（一对一监听的主要手段，本协议载荷无键盘 ID 字段）
+    // 过滤 1（可选）：MAC 绑定——一对一监听手段之一（不绑=收任意 MAC）
     if (has_target_mac_ && memcmp(rst.bda, target_mac_, 6) != 0) {
         return;
     }
@@ -189,29 +189,39 @@ void KeyboardMonitor::HandleAdv(
                 i += ad_len + 1;
                 continue;
             }
-            // 过滤 3：频道（Noirix44 st7789v 固定频道 1）
+            // 过滤 3：频道（Noirix44 固定频道 1）
             if (p[25] != CONFIG_KEYBOARD_MONITOR_CHANNEL) {
                 i += ad_len + 1;
                 continue;
+            }
+            // 过滤 4（可选）：keyboard_id（v2.2 HWINFO 唯一 ID）绑定
+            if (has_target_id_) {
+                uint32_t adv_id = ((uint32_t)p[19] << 24) | ((uint32_t)p[20] << 16) |
+                                  ((uint32_t)p[21] << 8) | p[22];
+                if (adv_id != target_id_) {
+                    i += ad_len + 1;
+                    continue;
+                }
             }
 
             std::lock_guard<std::mutex> lock(mutex_);
             status_.valid = true;
             status_.last_seen_us = esp_timer_get_time();
             status_.rssi = rst.rssi;
-            status_.battery_left = p[5];
+            // ---- prospector v2.2 布局（monitor 分支）----
+            status_.battery_left = p[5];    // 中央（左手）电量
             status_.layer = p[6];
             status_.profile = p[7] & 0x07;
             status_.conn_count = p[8];
-            status_.status_flags = p[9];
+            status_.status_flags = p[9];    // bit2 usb / bit3 hid / bit4 ble / bit5 bonded
             status_.role = p[10];
-            status_.side = p[11];
-            status_.battery_right = p[12];
-            status_.battery_aux = p[13];
-            memcpy(status_.layer_name, p + 14, 4);
+            status_.device_index = p[11];
+            status_.battery_right = p[12];  // 外设[0] 左手
+            status_.battery_aux = p[13];    // 外设[1] 右手/aux
+            status_.battery_per2 = p[14];   // 外设[2] 第三设备
+            memcpy(status_.layer_name, p + 15, 4);
             status_.layer_name[4] = '\0';
-            memcpy(status_.typed_keys, p + 18, 5);
-            status_.typed_keys[5] = '\0';
+            memcpy(status_.keyboard_id, p + 19, 4);
             status_.mods = p[23];
             status_.wpm = p[24];
             status_.channel = p[25];
@@ -229,14 +239,14 @@ void KeyboardMonitor::HandleAdv(
                     status_.wpm != last_log.wpm ||
                     status_.mods != last_log.mods ||
                     memcmp(status_.layer_name, last_log.layer_name, 5) != 0 ||
-                    memcmp(status_.typed_keys, last_log.typed_keys, 6) != 0;
+                    memcmp(status_.keyboard_id, last_log.keyboard_id, 4) != 0;
                 if (changed || now_us - last_log_us > 3 * 1000 * 1000) {
                     ESP_LOGI(TAG,
                              "adv %02X:%02X:%02X:%02X:%02X:%02X ch=%d L=%d%% R=%d%% "
-                             "wpm=%d layer='%s' keys='%s' rssi=%d",
+                             "wpm=%d layer='%s' id=%02X%02X%02X%02X rssi=%d",
                              rst.bda[0], rst.bda[1], rst.bda[2], rst.bda[3], rst.bda[4],
                              rst.bda[5], p[25], p[5], p[12], p[24], status_.layer_name,
-                             status_.typed_keys, rst.rssi);
+                             p[19], p[20], p[21], p[22], rst.rssi);
                     last_log = status_;
                     last_log_us = now_us;
                 }
@@ -260,8 +270,13 @@ void KeyboardMonitor::Start() {
     if (strlen(CONFIG_KEYBOARD_MONITOR_TARGET_MAC) > 0) {
         ParseTargetMac(CONFIG_KEYBOARD_MONITOR_TARGET_MAC);
     }
-    ESP_LOGI(TAG, "start: channel=%d mac=%s", CONFIG_KEYBOARD_MONITOR_CHANNEL,
-             has_target_mac_ ? "bound" : "any");
+    if (strlen(CONFIG_KEYBOARD_MONITOR_TARGET_ID) > 0) {
+        ParseTargetId(CONFIG_KEYBOARD_MONITOR_TARGET_ID);
+    }
+    ESP_LOGI(TAG, "start: channel=%d mac=%s id=%s",
+             CONFIG_KEYBOARD_MONITOR_CHANNEL,
+             has_target_mac_ ? "bound" : "any",
+             has_target_id_ ? "bound" : "any");
     xTaskCreate(ScanTaskThunk, "km_scan", 4096, this, 5, &scan_task_handle_);
     // StartGesturePolling 移入 ScanTask（InitBle 前调用）——不在 main 线程碰 LVGL 锁
 }
@@ -343,5 +358,23 @@ void KeyboardMonitor::ParseTargetMac(const char* str) {
         ESP_LOGI(TAG, "MAC filter bound");
     } else {
         ESP_LOGW(TAG, "invalid MAC filter: %s", str);
+    }
+}
+
+void KeyboardMonitor::SetTargetId(uint32_t id) {
+    target_id_ = id;
+    has_target_id_ = (id != 0);
+    if (has_target_id_) {
+        ESP_LOGI(TAG, "keyboard_id filter bound: %08X", id);
+    }
+}
+
+// 解析 "A1B2C3D4"（大端 8 位十六进制，对应载荷 byte 19-22）
+void KeyboardMonitor::ParseTargetId(const char* str) {
+    unsigned int id = 0;
+    if (sscanf(str, "%x", &id) == 1) {
+        SetTargetId(uint32_t(id));
+    } else {
+        ESP_LOGW(TAG, "invalid keyboard_id filter: %s", str);
     }
 }

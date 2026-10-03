@@ -24,19 +24,24 @@
 #ifndef CONFIG_KEYBOARD_MONITOR_TARGET_MAC
 #define CONFIG_KEYBOARD_MONITOR_TARGET_MAC ""
 #endif
+// 可选项：键盘硬件唯一 ID 绑定（prospector v2.2 载荷 byte 19-22，HWINFO）。
+// 十六进制 8 位，如 "A1B2C3D4"；留空 = 不绑定（仅靠 MAC/频道过滤）。
+#ifndef CONFIG_KEYBOARD_MONITOR_TARGET_ID
+#define CONFIG_KEYBOARD_MONITOR_TARGET_ID ""
+#endif
 #ifndef CONFIG_KEYBOARD_MONITOR_TIMEOUT_SEC
 #define CONFIG_KEYBOARD_MONITOR_TIMEOUT_SEC 30
 #endif
 
 // ============================================================
-// KeyboardMonitor —— BLE 键盘状态监听（Prospector 协议，Noirix44 st7789v 版）
+// KeyboardMonitor —— BLE 键盘状态监听（Prospector 协议，zmk-config-Noirix44 monitor 分支 v2.2 布局）
 // 板无关模块：ESP32-S3 以 observer 模式扫描键盘广播，解析 26 字节
 // 厂商载荷并缓存状态；不建立连接，不占键盘连接槽。
-// 注意：本键盘固件的载荷布局与 t-ogura 参考实现不同（无键盘 HWINFO ID，
-// 19-22 字节为最近输入字符）。一对一监听靠「频道 + MAC 绑定」。
+// 一对一监听：可选「MAC 绑定」+「keyboard_id(HWINFO) 绑定」+「频道过滤」。
 // ============================================================
 
-// 26 字节广播载荷（含厂商 ID，offset 0-25）——Noirix44 st7789v 分支实测布局：
+// 26 字节广播载荷（含厂商 ID，offset 0-25）——prospector v2.2 权威布局
+//（见 zmk-config-Noirix44/monitor 分支 include/zmk/status_advertisement.h）：
 // 0-1  = 0xFF 0xFF (Manufacturer ID)
 // 2-3  = 0xAB 0xCD (Prospector Protocol ID)
 // 4    = version (0x22 = v2.2)
@@ -44,12 +49,12 @@
 // 6    = 层索引
 // 7    = profile slot（[2:0]=profile 编号）
 // 8    = 已连接设备数
-// 9    = 状态标志 (bit0 caps / bit1 charging / bit2 usb / bit3 hid / bit4 ble)
+// 9    = 状态标志 (bit0 caps / bit1 charging / bit2 usb / bit3 hid / bit4 ble / bit5 bonded)
 // 10   = 角色 (0=standalone, 1=central, 2=peripheral)
-// 11   = 侧别 (0=left, 1=right)
-// 12-13= 外设电量 [0]=右手, [1]=扩展/aux (0=N/A)
-// 14-17= 层名 ASCII (4字节, 不保证 NUL 结尾)
-// 18-22= 最近输入字符 (5字节 ASCII，字母/数字/符号，可能无 NUL)
+// 11   = 分体设备索引 (device_index)
+// 12-14= 外设电量 [0]=左, [1]=右/aux, [2]=第三设备 (0=N/A)
+// 15-18= 层名 ASCII (4字节, 不保证 NUL 结尾)
+// 19-22= keyboard_id（HWINFO 硬件唯一 ID，4 字节）
 // 23   = 修饰键位图 (bit0-7: LCTL LSFT LALT LGUI RCTL RSFT RALT RGUI)
 // 24   = WPM
 // 25   = 频道 (1)
@@ -65,11 +70,12 @@ struct KeyboardStatus {
     uint8_t conn_count = 0;     // byte 8
     uint8_t status_flags = 0;   // byte 9
     uint8_t role = 0;           // byte 10
-    uint8_t side = 0;           // byte 11
-    uint8_t battery_right = 0;  // byte 12 右手
-    uint8_t battery_aux = 0;    // byte 13 扩展/aux
-    char layer_name[5] = {0};   // bytes 14-17
-    char typed_keys[6] = {0};   // bytes 18-22 最近输入字符（最多 5 个）
+    uint8_t device_index = 0;   // byte 11 分体设备索引
+    uint8_t battery_right = 0;  // byte 12 外设[0]（左手）
+    uint8_t battery_aux = 0;    // byte 13 外设[1]（右手/aux）
+    uint8_t battery_per2 = 0;   // byte 14 外设[2]（第三设备）
+    char layer_name[5] = {0};   // bytes 15-18
+    uint8_t keyboard_id[4] = {0}; // bytes 19-22 HWINFO 硬件唯一 ID
     uint8_t mods = 0;           // byte 23
     uint8_t wpm = 0;            // byte 24
     uint8_t channel = 0;        // byte 25
@@ -93,9 +99,10 @@ public:
 
     KeyboardStatus GetStatus() const;  // 互斥拷贝
 
-    // 一对一监听（本协议无键盘 ID 字段）：
-    // 频道过滤（Kconfig，默认 1）+ MAC 绑定（TARGET_MAC 或运行期 SetTargetMac）
+    // 一对一监听（v2.2 载荷含 keyboard_id HWINFO 唯一 ID）：
+    // 频道过滤（Kconfig，默认 1）+ MAC 绑定（可选）+ keyboard_id 绑定（可选）
     void SetTargetMac(const uint8_t* mac);   // nullptr = 不绑定
+    void SetTargetId(uint32_t id);           // 0 = 不绑定（v2.2 keyboard_id 大端 4 字节）
 
     // 以下为 BLE 栈 / FreeRTOS 回调入口，需从自由函数调用，故为 public：
     static void ScanTaskThunk(void* arg);
@@ -111,6 +118,7 @@ private:
     void ScanTask();
     void HandleAdv(const esp_ble_gap_cb_param_t::ble_scan_result_evt_param& rst);
     void ParseTargetMac(const char* str);
+    void ParseTargetId(const char* str);
 
     mutable std::mutex mutex_;
     KeyboardStatus status_;
@@ -124,6 +132,8 @@ private:
 
     uint8_t target_mac_[6] = {0};
     bool has_target_mac_ = false;
+    uint32_t target_id_ = 0;       // v2.2 keyboard_id（大端）
+    bool has_target_id_ = false;
 
     int64_t last_toggle_us_ = 0;
 };

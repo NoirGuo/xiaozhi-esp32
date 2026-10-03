@@ -472,8 +472,8 @@ void MonitorScreen::UpdateWidgets() {
         lv_label_set_text(layer_label_, buf);
     }
 
-    // --- 中央行 2：最近输入字符 ---
-    lv_label_set_text(typed_label_, st.typed_keys[0] ? st.typed_keys : " ");
+    // --- 中央行 2：输入字符（v2.2 载荷无该字段，行保持隐藏） ---
+    lv_label_set_text(typed_label_, "");
 
     // --- 中央行 3：修饰键芯片点亮 ---
     for (int i = 0; i < 4; i++) {
