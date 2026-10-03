@@ -211,7 +211,7 @@ void MonitorScreen::ReturnTimerCb(lv_timer_t* t) {
     auto* self = static_cast<MonitorScreen*>(lv_timer_get_user_data(t));
     self->Hide();
     KeyboardMonitor::GetInstance().SetActive(false);
-    KeyboardMonitor::GetInstance().StopScanning();  // 30s 自动返回：停止扫描
+    KeyboardMonitor::GetInstance().RequestScanStop();  // 30s 自动返回：请求停扫
 }
 
 // ---------- WPM 历史缓冲 ----------
