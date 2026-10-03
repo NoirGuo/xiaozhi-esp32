@@ -31,15 +31,16 @@ static const char* TAG = "MonitorScreen";
 #define USB_X MARGIN
 #define BLE_X (SCREEN_W - MARGIN - CONN_W)
 
-// WPM 行：折线 + WPM 标签 + 数字 横向排列（连接状态下方）
-// 实测 Montserrat 28px "WPM"=77px（W=30+P=20+M=27），数字 3 位≤55px
+// WPM 行：WPM 标签（左）+ 折线（右），整体居中，数字已取消
+// 实测 Montserrat 28px "WPM"=77px；总宽 = 77 + 16 + 130 = 223 → 左缘 (368-223)/2=72
+#define WPM_W 77
+#define WPM_CHART_GAP 16
 #define CHART_W 130
 #define CHART_H 40
-#define CHART_X MARGIN
+#define CHART_X (WPM_LABEL_X + WPM_W + WPM_CHART_GAP)   // 165
 #define CHART_Y 100
-#define WPM_LABEL_X (CHART_X + CHART_W + 12)
-#define WPM_NUM_X (WPM_LABEL_X + 88)              // WPM 77px + 11px 间隙
-#define WPM_LINE_Y (CHART_Y + CHART_H / 2 - 14)   // 28px 字垂直居中
+#define WPM_LABEL_X 72
+#define WPM_LINE_Y (CHART_Y + CHART_H / 2 - 14)          // 28px 字垂直居中
 
 // 折线纵向映射：y = H - v*H/200（纵坐标上限 200，无刻度）
 #define WPM_CHART_TOP 200
@@ -306,8 +307,9 @@ void MonitorScreen::BuildWidgets() {
     wpm_num_ = lv_label_create(screen_);
     lv_obj_set_style_text_color(wpm_num_, kFg, 0);
     lv_obj_set_style_text_font(wpm_num_, &lv_font_montserrat_28, 0);
-    lv_obj_set_pos(wpm_num_, WPM_NUM_X, WPM_LINE_Y);
+    lv_obj_set_pos(wpm_num_, WPM_LABEL_X, WPM_LINE_Y);
     lv_label_set_text(wpm_num_, "--");
+    lv_obj_add_flag(wpm_num_, LV_OBJ_FLAG_HIDDEN);   // 数字已取消显示
 
     // --- 顶部：USB 左 / BLE 右，同一行，字号 28 ---
     conn_usb_ = lv_obj_create(screen_);
