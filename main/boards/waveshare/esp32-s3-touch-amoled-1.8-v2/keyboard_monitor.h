@@ -88,10 +88,8 @@ public:
     void Toggle();
     void SetActive(bool active);   // 自动返回后同步状态
     bool IsActive() const;
-
-    // 按需扫描：切入监听界面时开启、退出时关闭（平时不占射频）
-    void StartScanning();
-    void StopScanning();
+    // 请求停止扫描（30s 自动返回 / 退出界面时调用；ScanTask 500ms 内执行）
+    void RequestScanStop();
 
     KeyboardStatus GetStatus() const;  // 互斥拷贝
 
@@ -121,6 +119,7 @@ private:
     volatile bool active_ = false;
     volatile bool scanning_ = false;
     volatile bool ble_ready_ = false;  // BLE 栈已初始化（按需扫描前提）
+    volatile bool scan_wanted_ = false;  // 界面切换请求标志：true=开扫 false=停扫（ScanTask 轮询执行）
     TaskHandle_t scan_task_handle_ = nullptr;
 
     uint8_t target_mac_[6] = {0};

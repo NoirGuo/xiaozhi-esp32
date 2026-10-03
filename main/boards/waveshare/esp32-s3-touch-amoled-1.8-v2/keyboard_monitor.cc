@@ -127,46 +127,30 @@ void KeyboardMonitor::ScanTask() {
     MonitorScreen::GetInstance().StartGesturePolling();
     if (!InitBle()) {
         ESP_LOGE(TAG, "BLE init failed, keyboard monitor disabled (AI still works)");
-        return;
+        // 不退出任务：规避"任务退出/空闲路径"崩溃（此前按需版 panic 即发生在此类路径）
+        while (true) {
+            vTaskDelay(pdMS_TO_TICKS(5000));
+        }
     }
-    // 【临时实验版 v2】BLE ready 后立即开始扫描、任务常驻不退出。
-    // 目的：验证"enable 后不扫描 + 任务退出"是否触发 controller 崩溃
-    //（之前持续扫描版稳定跑 47s 不崩；按需版每次 BLE ready 后即 CPU1 panic）。
-    // 若本版稳定 → 崩因是"空闲/任务退出"；若仍崩 → 与扫描无关，等 elf 反查。
     ble_ready_ = true;
-    ESP_LOGI(TAG, "BLE ready (experiment: scanning now)");
-    StartScanning();
+    ESP_LOGI(TAG, "BLE ready (on-demand scanning: start/stop follows monitor UI)");
+    // 【严格按需版】任务常驻不退出；平时不扫描（controller 空闲），
+    // 切入监听界面（scan_wanted_=true）才开扫，退出即停。
+    // 开/停扫全部在本任务内串行执行，避免跨任务直接调 BLE API 的竞态。
     while (true) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (scan_wanted_ && !scanning_) {
+            if (esp_ble_gap_set_scan_params(&kScanParams) == ESP_OK &&
+                esp_ble_gap_start_scanning(0) == ESP_OK) {
+                scanning_ = true;
+                ESP_LOGI(TAG, "BLE scanning started (monitor UI active)");
+            }
+        } else if (!scan_wanted_ && scanning_) {
+            esp_ble_gap_stop_scanning();
+            scanning_ = false;
+            ESP_LOGI(TAG, "BLE scanning stopped (monitor UI closed)");
+        }
+        vTaskDelay(pdMS_TO_TICKS(500));  // 500ms 轮询标志位
     }
-}
-
-// ---------- 按需扫描（监听界面才开，退出即关） ----------
-void KeyboardMonitor::StartScanning() {
-    if (!started_ || !ble_ready_ || scanning_) {
-        return;
-    }
-    esp_err_t err = esp_ble_gap_set_scan_params(&kScanParams);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "set scan params failed: %s", esp_err_to_name(err));
-        return;
-    }
-    err = esp_ble_gap_start_scanning(0);  // 0 = 持续扫描
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "start scanning failed: %s", esp_err_to_name(err));
-        return;
-    }
-    scanning_ = true;
-    ESP_LOGI(TAG, "BLE scanning started");
-}
-
-void KeyboardMonitor::StopScanning() {
-    if (!scanning_) {
-        return;
-    }
-    scanning_ = false;
-    esp_ble_gap_stop_scanning();  // 幂等；未初始化/已停止时仅返回错误码
-    ESP_LOGI(TAG, "BLE scanning stopped");
 }
 
 // ---------- GAP 事件 ----------
@@ -282,12 +266,22 @@ void KeyboardMonitor::Start() {
     // StartGesturePolling 移入 ScanTask（InitBle 前调用）——不在 main 线程碰 LVGL 锁
 }
 
+void KeyboardMonitor::RequestScanStop() {
+    if (!started_) {
+        return;
+    }
+    scan_wanted_ = false;  // 请求停扫（ScanTask 500ms 内执行）
+}
+
 void KeyboardMonitor::Stop() {
     if (!started_) {
         return;
     }
-    scanning_ = false;
-    esp_ble_gap_stop_scanning();  // BLE 未初始化时仅返回错误码，安全
+    scan_wanted_ = false;      // 请求停扫（ScanTask 500ms 内执行）
+    if (scanning_) {
+        esp_ble_gap_stop_scanning();
+        scanning_ = false;
+    }
     if (active_) {
         MonitorScreen::GetInstance().Hide();
         SetActive(false);
@@ -308,10 +302,10 @@ void KeyboardMonitor::Toggle() {
     SetActive(!active_);
     if (active_) {
         MonitorScreen::GetInstance().Show();
-        StartScanning();  // 切入监听界面才开启扫描
+        scan_wanted_ = true;   // 切入监听界面 → 请求开扫（ScanTask 执行）
     } else {
         MonitorScreen::GetInstance().Hide();
-        StopScanning();  // 退出监听界面即停止扫描
+        scan_wanted_ = false;  // 退出监听界面 → 请求停扫（ScanTask 执行）
     }
 }
 

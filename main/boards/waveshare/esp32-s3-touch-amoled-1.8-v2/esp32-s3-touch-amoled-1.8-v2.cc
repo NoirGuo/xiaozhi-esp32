@@ -124,6 +124,14 @@ public:
         SpiLcdDisplay::SetupUI();
 
         DisplayLockGuard lock(this);
+        // 圆角 AMOLED 屏：顶部状态栏（WiFi 左 / 电池右）下移并内收，
+        // 避开屏幕物理圆角，防止图标被切/溢出。
+        // 原值：pad_top=4（spacing(2)）、pad_left/right=8（spacing(4)）——不够。
+        lv_obj_set_style_pad_top(top_bar_, 18, 0);
+        lv_obj_set_style_pad_bottom(top_bar_, 8, 0);
+        lv_obj_set_style_pad_left(top_bar_, 18, 0);
+        lv_obj_set_style_pad_right(top_bar_, 18, 0);
+        // 中间状态文字条保持既有内收
         lv_obj_set_style_pad_left(status_bar_, LV_HOR_RES * 0.1, 0);
         lv_obj_set_style_pad_right(status_bar_, LV_HOR_RES * 0.1, 0);
     }
