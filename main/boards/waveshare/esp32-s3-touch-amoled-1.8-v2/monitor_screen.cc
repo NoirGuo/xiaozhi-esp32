@@ -42,8 +42,8 @@ static const char* TAG = "MonitorScreen";
 #define WPM_LABEL_X 72
 #define WPM_LINE_Y (CHART_Y + CHART_H / 2 - 14)          // 28px 字垂直居中
 
-// 折线纵向映射：y = H - v*H/200（纵坐标上限 200，无刻度）
-#define WPM_CHART_TOP 200
+// 折线纵向映射：y = H - v*H/150（纵坐标上限 150，无刻度）
+#define WPM_CHART_TOP 150
 
 // 垂直三等分：WPM 行 → 层名 → 修饰键
 #define LAYER_Y 215
@@ -243,9 +243,9 @@ void MonitorScreen::RebuildWpmChart() {
     lv_line_set_points(wpm_chart_line_, pts, n);
     lv_line_set_points(wpm_chart_area_, pts, n);
 
-    // 当前值圆点：贴主线末点
+    // 当前值圆点：贴主线末点（wpm_dot_ 挂在 screen_ 上，需加折线区偏移）
     if (lv_obj_is_valid(wpm_dot_)) {
-        lv_obj_set_pos(wpm_dot_, pts[n - 1].x - 3, pts[n - 1].y - 3);
+        lv_obj_set_pos(wpm_dot_, CHART_X + pts[n - 1].x - 3, CHART_Y + pts[n - 1].y - 3);
     }
 }
 
