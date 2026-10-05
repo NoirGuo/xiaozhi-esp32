@@ -36,6 +36,9 @@ HEADER_TEMPLATE = """// Auto-generated language config (runtime multi-language)
 
 namespace Lang {{
 
+// 语言元数据（兼容原版 Lang::CODE；跟随运行时语言切换更新）
+inline const char* CODE = "{lang_code}";
+
 // ======================= 语言注册表 =======================
 struct StringPair {{
     const char* key;
@@ -91,6 +94,7 @@ inline bool SetLanguage(const char* code) {{
     for (int i = 0; i < kLanguageCount; i++) {{
         if (std::strcmp(kLanguages[i].code, code) == 0) {{
             kCurrentLang = i;
+            CODE = kLanguages[i].code;
             Strings::ReloadAll();
             return true;
         }}
