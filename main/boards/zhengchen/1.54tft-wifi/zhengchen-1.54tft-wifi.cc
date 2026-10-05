@@ -10,12 +10,22 @@
 #include "assets/lang_config.h"
 #include "power_manager.h"
 #include "keyboard_monitor.h"
+#include "language_select.h"
 #include "mcp_server.h"
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
+#include <esp_timer.h>
 #define TAG "ZHENGCHEN_1_54TFT_WIFI"
+
+// 首次开机语言自选检查（延时触发，等 audio/UI 就绪）
+static void LanguageSelectCheckCb(void* arg) {
+    esp_timer_handle_t timer = static_cast<esp_timer_handle_t>(arg);
+    esp_timer_delete(timer);
+    LanguageSelect::GetInstance().CheckAndShow();
+}
+
 class ZHENGCHEN_1_54TFT_WIFI : public WifiBoard {
 private:
     Button boot_button_;
@@ -73,6 +83,11 @@ private:
         
         boot_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
+            // 语言选择模式：BOOT 键 = 确认语言
+            if (LanguageSelect::GetInstance().IsActive()) {
+                LanguageSelect::GetInstance().Confirm();
+                return;
+            }
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting) {
                 EnterWifiConfigMode();
@@ -82,6 +97,10 @@ private:
         });
         // 设置开机按钮的长按事件（直接进入配网模式）
         boot_button_.OnLongPress([this]() {
+            // 语言选择模式：忽略长按（防误触配网）
+            if (LanguageSelect::GetInstance().IsActive()) {
+                return;
+            }
             // 唤醒电源保存定时器
             power_save_timer_->WakeUp();
             // 获取应用程序实例
@@ -95,6 +114,11 @@ private:
         });
         volume_up_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
+            // 语言选择模式：音量+ = 下移切换语言
+            if (LanguageSelect::GetInstance().IsActive()) {
+                LanguageSelect::GetInstance().Move(1);
+                return;
+            }
             auto codec = GetAudioCodec();
             auto volume = codec->output_volume() + 10;
             if (volume > 100) {
@@ -111,10 +135,19 @@ private:
         // 双击音量+：切换键盘监听界面（单击/长按音量功能不受影响）
         volume_up_button_.OnDoubleClick([this]() {
             power_save_timer_->WakeUp();
+            // 语言选择模式：忽略双击（防止误切监听界面）
+            if (LanguageSelect::GetInstance().IsActive()) {
+                return;
+            }
             KeyboardMonitor::GetInstance().Toggle();
         });
         volume_down_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
+            // 语言选择模式：音量- = 上移切换语言
+            if (LanguageSelect::GetInstance().IsActive()) {
+                LanguageSelect::GetInstance().Move(-1);
+                return;
+            }
             auto codec = GetAudioCodec();
             auto volume = codec->output_volume() - 10;
             if (volume < 0) {
@@ -170,6 +203,12 @@ public:
         boot_button_(BOOT_BUTTON_GPIO),
         volume_up_button_(VOLUME_UP_BUTTON_GPIO),
         volume_down_button_(VOLUME_DOWN_BUTTON_GPIO) {
+        // 语言自选：先恢复持久化语言（早于小智 UI 创建，首帧即正确语言）
+        LanguageSelect::GetInstance().LoadPersisted();
+        // 语言自选：激活期间禁用省电休眠（界面不超时），确认后恢复
+        LanguageSelect::GetInstance().SetPowerSaveHook([this](bool enable) {
+            power_save_timer_->SetEnabled(enable);
+        });
         InitializePowerManager();
         InitializePowerSaveTimer();
         InitializeSpi();
@@ -179,6 +218,13 @@ public:
         GetBacklight()->RestoreBrightness();
         // 键盘监控：启动 BLE 初始化与扫描任务（小智默认浅色主题，不改）
         KeyboardMonitor::GetInstance().Start();
+        // 语言自选：延时 3s（等 audio/UI 就绪）检查是否首次开机，是则弹出选择界面
+        esp_timer_create_args_t args = {};
+        args.callback = LanguageSelectCheckCb;
+        args.name = "lang_select_check";
+        esp_timer_handle_t lang_check_timer = nullptr;
+        ESP_ERROR_CHECK(esp_timer_create(&args, &lang_check_timer));
+        ESP_ERROR_CHECK(esp_timer_start_once(lang_check_timer, 3 * 1000 * 1000));
     }
     // 获取音频编解码器
     virtual AudioCodec* GetAudioCodec() override {
