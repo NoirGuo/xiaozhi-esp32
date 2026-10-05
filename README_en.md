@@ -1,4 +1,4 @@
-(English | [中文](README_zh.md))
+(English | [中文](README.md))
 
 # xiaozhi-esp32 Custom Build · Xiaozhi AI + Noirix44 Keyboard Monitor (1.54TFT)
 
