@@ -12,7 +12,7 @@
 
 ## 硬件
 
-![ESP32-S3 开发板](./docs/board-esp32s3.jpg)
+![ESP32-S3 开发板](./docs/zhengchen-1.54tft-wifi.png)
 
 | 部件 | 规格 |
 |---|---|

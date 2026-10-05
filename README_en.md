@@ -12,7 +12,7 @@ A customized firmware based on [xiaozhi-esp32](https://github.com/78/xiaozhi-esp
 
 ## Hardware
 
-![ESP32-S3 board](./docs/board-esp32s3.jpg)
+![ESP32-S3 board](./docs/zhengchen-1.54tft-wifi.png)
 
 | Part | Spec |
 |---|---|
