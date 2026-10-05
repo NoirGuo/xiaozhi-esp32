@@ -95,6 +95,10 @@ jobs:
           if [[ "$BUILD_OPTIONS_JSON" != "null" && -n "$BUILD_OPTIONS_JSON" ]]; then
             OPTIONS+=(--build-options-json "$BUILD_OPTIONS_JSON")
           fi
+          # zhengchen 1.54tft-wifi: dual wake-word models (zh "你好小智" + en "Hi ESP").
+          if [[ "$BOARD" == "zhengchen/1.54tft-wifi" ]]; then
+            OPTIONS+=(--wake-word "wn9_nihaoxiaozhi_tts,wn9s_hiesp")
+          fi
           python scripts/build.py "$BOARD" --name "$VARIANT" "${OPTIONS[@]}"
 
       - name: Upload artifacts

@@ -339,14 +339,20 @@ def _wake_word_sdkconfig_options(
     wake_word: str,
     target: str,
 ) -> tuple[str, list[str], list[str]]:
-    """Map a wake-word model to implementation and model Kconfig options."""
-    normalized = wake_word.strip().casefold().replace("-", "_")
-    if normalized == "nihaoxiaozhi":
-        normalized = (
-            "wn9s_nihaoxiaozhi"
-            if target in _LITE_WAKE_WORD_TARGETS
-            else "wn9_nihaoxiaozhi_tts"
-        )
+    """Map one or more comma-separated wake-word models to Kconfig options."""
+    requested = [
+        item.strip() for item in wake_word.split(",") if item.strip()
+    ]
+    normalized_list: list[str] = []
+    for item in requested:
+        normalized = item.casefold().replace("-", "_")
+        if normalized == "nihaoxiaozhi":
+            normalized = (
+                "wn9s_nihaoxiaozhi"
+                if target in _LITE_WAKE_WORD_TARGETS
+                else "wn9_nihaoxiaozhi_tts"
+            )
+        normalized_list.append(normalized)
 
     model_symbols = _enabled_default_wake_word_symbols(target)
     options = [f"{symbol}=n" for symbol in model_symbols]
@@ -357,32 +363,43 @@ def _wake_word_sdkconfig_options(
         "CONFIG_USE_CUSTOM_WAKE_WORD=n",
     ])
 
-    if normalized == "disabled":
+    if any(normalized == "disabled" for normalized in normalized_list):
+        if len(normalized_list) != 1:
+            raise ValueError(
+                f"Invalid wake word {wake_word!r}: 'disabled' cannot be "
+                "combined with model names"
+            )
         options.append("CONFIG_WAKE_WORD_DISABLED=y")
-        return normalized, options, ["CONFIG_WAKE_WORD_DISABLED"]
+        return "disabled", options, ["CONFIG_WAKE_WORD_DISABLED"]
 
     if target not in _ESP_WAKE_WORD_TARGETS | _AFE_WAKE_WORD_TARGETS:
         raise ValueError(f"Wake-word selection is not supported for target {target}")
-    if not _WAKE_WORD_MODEL_PATTERN.fullmatch(normalized):
-        raise ValueError(
-            f"Invalid wake word {wake_word!r}. Use 'disabled', "
-            "'nihaoxiaozhi', or an ESP-SR model name such as "
-            "'wn9_jarvis_tts'."
-        )
-    if target in _LITE_WAKE_WORD_TARGETS and not normalized.startswith("wn9s_"):
-        raise ValueError(
-            f"Target {target} supports WakeNet9s models only; "
-            f"{normalized!r} is not compatible"
-        )
+    for normalized in normalized_list:
+        if not _WAKE_WORD_MODEL_PATTERN.fullmatch(normalized):
+            raise ValueError(
+                f"Invalid wake word {wake_word!r}. Use 'disabled', "
+                "'nihaoxiaozhi', or an ESP-SR model name such as "
+                "'wn9_jarvis_tts'."
+            )
+        if target in _LITE_WAKE_WORD_TARGETS and not normalized.startswith("wn9s_"):
+            raise ValueError(
+                f"Target {target} supports WakeNet9s models only; "
+                f"{normalized!r} is not compatible"
+            )
 
     implementation = (
         "CONFIG_USE_AFE_WAKE_WORD"
         if target in _AFE_WAKE_WORD_TARGETS
         else "CONFIG_USE_ESP_WAKE_WORD"
     )
-    model_symbol = f"CONFIG_SR_WN_{normalized.upper()}"
-    options.extend((f"{implementation}=y", f"{model_symbol}=y"))
-    return normalized, options, [implementation, model_symbol]
+    options.append(f"{implementation}=y")
+    model_symbols_out: list[str] = []
+    for normalized in normalized_list:
+        model_symbol = f"CONFIG_SR_WN_{normalized.upper()}"
+        options.append(f"{model_symbol}=y")
+        model_symbols_out.append(model_symbol)
+    normalized_out = ",".join(normalized_list)
+    return normalized_out, options, [implementation] + model_symbols_out
 
 ################################################################################
 # board / variant related functions
