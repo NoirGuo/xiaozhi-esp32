@@ -43,4 +43,3 @@ idf.py build flash monitor
 ```bash
 idf.py merge-bin
 ```
-
