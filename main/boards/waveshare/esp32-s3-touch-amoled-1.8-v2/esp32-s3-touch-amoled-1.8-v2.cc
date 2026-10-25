@@ -26,6 +26,8 @@
 #include <esp_lvgl_port.h>
 #include <lvgl.h>
 
+#include "review_engine.h"
+
 #define TAG "WaveshareEsp32s3TouchAMOLED1inch8"
 
 class Pmic : public Axp2101 {
@@ -372,6 +374,122 @@ private:
                 EnterWifiConfigMode();
                 return true;
             });
+
+        InitializeReviewTools(mcp_server);
+    }
+
+    // ===== 本地复习模块：注册 MCP 工具，由云端 LLM 在唤醒后调用 =====
+    void InitializeReviewTools(McpServer& mcp_server) {
+        auto& engine = ReviewEngine::GetInstance();
+
+        // 抽卡（顺序/随机）
+        mcp_server.AddTool("review.draw_card",
+            "Draw a review flashcard. When the user asks to start reviewing, draw a card, "
+            "or continue with the next card, call this tool. Parameter 'random' (default false) "
+            "controls whether to draw a random card (true) or the next card in order (false). "
+            "Return the card's recite text (口播稿) so it can be read aloud to the user.",
+            PropertyList({Property("random", kPropertyTypeBoolean, false)}),
+            [this](const PropertyList& properties) -> ToolResult {
+                bool random = properties["random"].value<bool>();
+                const ReviewCard* card = nullptr;
+                int index = 0, total = 0;
+                if (!engine.NextCard(random, &card, &index, &total) || card == nullptr) {
+                    return std::unexpected(std::string("没有可用的复习卡片"));
+                }
+                // 屏幕显示标题 + 要点
+                ShowCardOnScreen(*card, index, total);
+                // 返回 recite 文本，云端 LLM 会朗读
+                return std::string(card->recite);
+            });
+
+        // 朗读当前卡口播稿
+        mcp_server.AddTool("review.read_aloud",
+            "Read aloud the current flashcard's recite text (口播稿). Use this when the user "
+            "says '朗读' or '再来一遍'.",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ToolResult {
+                const ReviewCard* card = engine.CurrentCard();
+                if (card == nullptr) {
+                    return std::unexpected(std::string("请先抽一张卡片"));
+                }
+                return std::string(card->recite);
+            });
+
+        // 显示要点/口诀/考点
+        mcp_server.AddTool("review.show_details",
+            "Show the current flashcard's details on screen: key points (要点), mnemonic (口诀), "
+            "and exam point (考点). Returns the key points as text.",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ToolResult {
+                const ReviewCard* card = engine.CurrentCard();
+                if (card == nullptr) {
+                    return std::unexpected(std::string("请先抽一张卡片"));
+                }
+                std::string result;
+                result += card->title;
+                if (!card->mnemonic.empty()) {
+                    result += "\n【口诀】" + card->mnemonic;
+                }
+                if (!card->exam_point.empty()) {
+                    result += "\n【考点】" + card->exam_point;
+                }
+                for (const auto& p : card->points) {
+                    result += "\n· " + p;
+                }
+                display_->SetChatMessage("assistant", card->title.c_str());
+                return result;
+            });
+
+        // 标记错题 / 我会了
+        mcp_server.AddTool("review.mark_wrong",
+            "Mark the current flashcard as a wrong-answer card (错题) or clear the mark. "
+            "Use when the user says '标记错题' or '我不会' (mark=true), or '我会了' (mark=false).",
+            PropertyList({Property("mark", kPropertyTypeBoolean, true)}),
+            [this](const PropertyList& properties) -> ToolResult {
+                const ReviewCard* card = engine.CurrentCard();
+                if (card == nullptr) {
+                    return std::unexpected(std::string("请先抽一张卡片"));
+                }
+                bool mark = properties["mark"].value<bool>();
+                engine.MarkWrong(card->id, mark);
+                return std::string(mark ? "已标记为错题" : "已标记为掌握");
+            });
+
+        // 错题回顾
+        mcp_server.AddTool("review.review_wrong",
+            "Start reviewing only the wrong-answer cards (错题回顾). Use when the user asks to "
+            "review their mistakes.",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ToolResult {
+                engine.StartWrongReview();
+                const ReviewCard* card = nullptr;
+                int index = 0, total = 0;
+                if (!engine.NextCard(false, &card, &index, &total) || card == nullptr) {
+                    return std::unexpected(std::string("当前没有错题"));
+                }
+                ShowCardOnScreen(*card, index, total);
+                return std::string("错题回顾开始，共 " + std::to_string(total) + " 题：" + card->recite);
+            });
+
+        // 查询进度
+        mcp_server.AddTool("review.get_progress",
+            "Get the review progress: total card count and wrong-answer card count.",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ToolResult {
+                int total = (int)engine.CardCount();
+                int wrong = engine.WrongQueueSize();
+                return std::string("复习进度：共 " + std::to_string(total) + " 张卡片，错题 " +
+                                   std::to_string(wrong) + " 张");
+            });
+    }
+
+    // 把卡片标题与要点显示到屏幕（底部字幕栏 + 通知）
+    void ShowCardOnScreen(const ReviewCard& card, int index, int total) {
+        std::string title_line = card.id + " " + card.title;
+        display_->SetChatMessage("assistant", title_line.c_str());
+        // 用通知栏展示进度
+        std::string progress = "卡片 " + std::to_string(index + 1) + "/" + std::to_string(total);
+        display_->ShowNotification(progress.c_str(), 2000);
     }
 
 public:
@@ -386,6 +504,11 @@ public:
          InitializeTouch();
         InitializeButtons();
         InitializeTools();
+
+        // 初始化本地复习引擎（解析嵌入的 cards.json）
+        if (!ReviewEngine::GetInstance().Initialize(nullptr, 0)) {
+            ESP_LOGE(TAG, "Failed to initialize review engine");
+        }
     }
 
     virtual AudioCodec* GetAudioCodec() override {
