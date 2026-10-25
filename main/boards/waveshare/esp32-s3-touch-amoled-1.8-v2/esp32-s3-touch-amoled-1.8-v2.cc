@@ -380,7 +380,6 @@ private:
 
     // ===== 本地复习模块：注册 MCP 工具，由云端 LLM 在唤醒后调用 =====
     void InitializeReviewTools(McpServer& mcp_server) {
-        auto& engine = ReviewEngine::GetInstance();
 
         // 抽卡（顺序/随机）
         mcp_server.AddTool("review.draw_card",
@@ -393,7 +392,7 @@ private:
                 bool random = properties["random"].value<bool>();
                 const ReviewCard* card = nullptr;
                 int index = 0, total = 0;
-                if (!engine.NextCard(random, &card, &index, &total) || card == nullptr) {
+                if (!ReviewEngine::GetInstance().NextCard(random, &card, &index, &total) || card == nullptr) {
                     return std::unexpected(std::string("没有可用的复习卡片"));
                 }
                 // 屏幕显示标题 + 要点
@@ -408,7 +407,7 @@ private:
             "says '朗读' or '再来一遍'.",
             PropertyList(),
             [this](const PropertyList& properties) -> ToolResult {
-                const ReviewCard* card = engine.CurrentCard();
+                const ReviewCard* card = ReviewEngine::GetInstance().CurrentCard();
                 if (card == nullptr) {
                     return std::unexpected(std::string("请先抽一张卡片"));
                 }
@@ -421,7 +420,7 @@ private:
             "and exam point (考点). Returns the key points as text.",
             PropertyList(),
             [this](const PropertyList& properties) -> ToolResult {
-                const ReviewCard* card = engine.CurrentCard();
+                const ReviewCard* card = ReviewEngine::GetInstance().CurrentCard();
                 if (card == nullptr) {
                     return std::unexpected(std::string("请先抽一张卡片"));
                 }
@@ -446,12 +445,12 @@ private:
             "Use when the user says '标记错题' or '我不会' (mark=true), or '我会了' (mark=false).",
             PropertyList({Property("mark", kPropertyTypeBoolean, true)}),
             [this](const PropertyList& properties) -> ToolResult {
-                const ReviewCard* card = engine.CurrentCard();
+                const ReviewCard* card = ReviewEngine::GetInstance().CurrentCard();
                 if (card == nullptr) {
                     return std::unexpected(std::string("请先抽一张卡片"));
                 }
                 bool mark = properties["mark"].value<bool>();
-                engine.MarkWrong(card->id, mark);
+                ReviewEngine::GetInstance().MarkWrong(card->id, mark);
                 return std::string(mark ? "已标记为错题" : "已标记为掌握");
             });
 
@@ -461,10 +460,10 @@ private:
             "review their mistakes.",
             PropertyList(),
             [this](const PropertyList& properties) -> ToolResult {
-                engine.StartWrongReview();
+                ReviewEngine::GetInstance().StartWrongReview();
                 const ReviewCard* card = nullptr;
                 int index = 0, total = 0;
-                if (!engine.NextCard(false, &card, &index, &total) || card == nullptr) {
+                if (!ReviewEngine::GetInstance().NextCard(false, &card, &index, &total) || card == nullptr) {
                     return std::unexpected(std::string("当前没有错题"));
                 }
                 ShowCardOnScreen(*card, index, total);
@@ -476,8 +475,8 @@ private:
             "Get the review progress: total card count and wrong-answer card count.",
             PropertyList(),
             [this](const PropertyList& properties) -> ToolResult {
-                int total = (int)engine.CardCount();
-                int wrong = engine.WrongQueueSize();
+                int total = (int)ReviewEngine::GetInstance().CardCount();
+                int wrong = ReviewEngine::GetInstance().WrongQueueSize();
                 return std::string("复习进度：共 " + std::to_string(total) + " 张卡片，错题 " +
                                    std::to_string(wrong) + " 张");
             });
