@@ -5,7 +5,9 @@
     "builds": [
         {
             "name": "zhengchen-1.54tft-wifi",
-            "sdkconfig_append": []
+            "sdkconfig_append": [
+                "CONFIG_USE_WECHAT_MESSAGE_STYLE=y"
+            ]
         }
     ]
 }

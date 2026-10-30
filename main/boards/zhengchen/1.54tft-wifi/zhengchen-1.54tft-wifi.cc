@@ -17,41 +17,23 @@
 
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
+#include <esp_timer.h>
+
+#include <atomic>
 
 #define TAG "ZHENGCHEN_1_54TFT_WIFI"
 
-// 征辰 1.54 为 240x240 方屏（微雪 1.8 AMOLED 为 368x448），
-// 字幕行一行只放得下约 10 个汉字；这里按“字符数”截断并补省略号，
-// 避免长标题被 LVGL 裁成半行。纯板级显示适配，不改变任何业务逻辑。
-static constexpr size_t kReviewSubtitleMaxChars = 10;
+// 微信对话样式下，正文由 LVGL 按气泡宽度自动折行（LV_LABEL_LONG_WRAP），
+// 超出一屏的部分用 VOL± 翻页查看，因此这里不再做"按字符数截断"。
+// 原先的 10 字截断只适用于三段式单行横向滚动字幕，会把卡片标题切残。
 
-// 按 UTF-8 码点截断（中文 3 字节，不能按字节切，否则会出现半个汉字）。
-static std::string TruncateUtf8(const std::string& text, size_t max_chars) {
-    size_t i = 0;
-    size_t chars = 0;
-    while (i < text.size() && chars < max_chars) {
-        unsigned char c = (unsigned char)text[i];
-        size_t len = 1;
-        if ((c & 0x80) == 0x00) {
-            len = 1;
-        } else if ((c & 0xE0) == 0xC0) {
-            len = 2;
-        } else if ((c & 0xF0) == 0xE0) {
-            len = 3;
-        } else if ((c & 0xF8) == 0xF0) {
-            len = 4;
-        }
-        if (i + len > text.size()) {
-            break;  // 非法/截断的多字节序列，丢弃尾部
-        }
-        i += len;
-        chars++;
-    }
-    if (i >= text.size()) {
-        return text;
-    }
-    return text.substr(0, i) + "…";
-}
+// 长按判定阈值：轻点仍是音量 ±10；按住超过该阈值才开始翻页，
+// 同时让 button 组件把这次按压归类为 long press，松手时不会再补发 click
+// （否则"按住翻页"会顺带把音量 +10）。
+static constexpr uint16_t kVolumeLongPressMs = 600;
+// 按住后多久开始翻页、之后每页间隔
+static constexpr int64_t kScrollStartDelayUs = 600 * 1000;
+static constexpr int64_t kScrollRepeatIntervalUs = 300 * 1000;
 
 class ZHENGCHEN_1_54TFT_WIFI : public WifiBoard {
 private:
@@ -63,6 +45,11 @@ private:
     PowerManager* power_manager_;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
+    // 按住 VOL± 连续翻页：0 = 停止，-1 = 上翻（看更早），+1 = 下翻（看更新）
+    esp_timer_handle_t chat_scroll_timer_ = nullptr;
+    std::atomic<int> chat_scroll_direction_{0};
+    // 本次按压期间是否真的翻过页：翻过则松手时吞掉 click，避免"翻页顺手改音量"
+    std::atomic<bool> chat_scroll_moved_{false};
 
     void InitializePowerManager() {
         power_manager_ = new PowerManager(GPIO_NUM_9);
@@ -110,6 +97,58 @@ private:
         ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
     }
 
+    // ---------------- 聊天区翻页（按住 VOL±） ----------------
+    static void ChatScrollTimerCallback(void* arg) {
+        static_cast<ZHENGCHEN_1_54TFT_WIFI*>(arg)->OnChatScrollTick();
+    }
+
+    void InitializeChatScrollTimer() {
+        esp_timer_create_args_t args = {};
+        args.callback = &ZHENGCHEN_1_54TFT_WIFI::ChatScrollTimerCallback;
+        args.arg = this;
+        args.dispatch_method = ESP_TIMER_TASK;
+        args.name = "chat_scroll";
+        ESP_ERROR_CHECK(esp_timer_create(&args, &chat_scroll_timer_));
+    }
+
+    // 定时器任务上下文：翻一页；翻不动（到顶/到底/无内容）就停并给一次提示
+    void OnChatScrollTick() {
+        int direction = chat_scroll_direction_.load();
+        if (direction == 0) {
+            return;
+        }
+        if (!display_->ScrollChatPage(direction)) {
+            chat_scroll_direction_.store(0);
+            if (!display_->IsChatScrollable()) {
+                GetDisplay()->ShowNotification("当前没有可滚动内容", 1200);
+            } else {
+                GetDisplay()->ShowNotification(direction < 0 ? "已到最早一条" : "已到最新一条", 1200);
+            }
+            return;
+        }
+        chat_scroll_moved_.store(true);
+        // 仍按住 → 继续下一屏（连翻），松手时由 StopChatScroll 取消
+        esp_timer_start_once(chat_scroll_timer_, kScrollRepeatIntervalUs);
+    }
+
+    void StartChatScroll(int direction) {
+        power_save_timer_->WakeUp();
+        chat_scroll_moved_.store(false);
+        chat_scroll_direction_.store(direction);
+        esp_timer_stop(chat_scroll_timer_);
+        esp_timer_start_once(chat_scroll_timer_, kScrollStartDelayUs);
+    }
+
+    // 把"本次按压"标记为已消费：翻过页就返回 true，调用方据此跳过音量调节
+    bool ConsumeScrollClick() {
+        return chat_scroll_moved_.exchange(false);
+    }
+
+    void StopChatScroll() {
+        chat_scroll_direction_.store(0);
+        esp_timer_stop(chat_scroll_timer_);
+    }
+
     void InitializeButtons() {
         
         boot_button_.OnClick([this]() {
@@ -136,7 +175,11 @@ private:
             EnterWifiConfigMode();
         });
 
+        // 轻点：音量 ±10（原行为不变）
         volume_up_button_.OnClick([this]() {
+            if (ConsumeScrollClick()) {
+                return;  // 这次按压已经用于翻页，别再改音量
+            }
             power_save_timer_->WakeUp();
             auto codec = GetAudioCodec();
             auto volume = codec->output_volume() + 10;
@@ -147,13 +190,10 @@ private:
             GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume/10));
         });
 
-        volume_up_button_.OnLongPress([this]() {
-            power_save_timer_->WakeUp();
-            GetAudioCodec()->SetOutputVolume(100);
-            GetDisplay()->ShowNotification(Lang::Strings::MAX_VOLUME);
-        });
-
         volume_down_button_.OnClick([this]() {
+            if (ConsumeScrollClick()) {
+                return;
+            }
             power_save_timer_->WakeUp();
             auto codec = GetAudioCodec();
             auto volume = codec->output_volume() - 10;
@@ -164,11 +204,26 @@ private:
             GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume/10));
         });
 
-        volume_down_button_.OnLongPress([this]() {
+        // 双击：最大音量 / 静音（原"长按"功能迁到双击，避免按住翻页时丢功能）
+        volume_up_button_.OnDoubleClick([this]() {
+            chat_scroll_moved_.store(false);
+            power_save_timer_->WakeUp();
+            GetAudioCodec()->SetOutputVolume(100);
+            GetDisplay()->ShowNotification(Lang::Strings::MAX_VOLUME);
+        });
+
+        volume_down_button_.OnDoubleClick([this]() {
+            chat_scroll_moved_.store(false);
             power_save_timer_->WakeUp();
             GetAudioCodec()->SetOutputVolume(0);
             GetDisplay()->ShowNotification(Lang::Strings::MUTED);
         });
+
+        // 按住 ≥600ms：上/下翻聊天记录（按住连翻，松手即停）
+        volume_up_button_.OnPressDown([this]() { StartChatScroll(-1); });
+        volume_up_button_.OnPressUp([this]() { StopChatScroll(); });
+        volume_down_button_.OnPressDown([this]() { StartChatScroll(1); });
+        volume_down_button_.OnPressUp([this]() { StopChatScroll(); });
     }
 
     void InitializeSt7789Display() {
@@ -497,9 +552,8 @@ private:
                 for (const auto& p : card->points) {
                     result += "\n· " + p;
                 }
-                // 240x240 方屏字幕行窄，标题按字符数截断显示（返回给 LLM 的文本不受影响）
-                display_->SetChatMessage("assistant",
-                    TruncateUtf8(card->title, kReviewSubtitleMaxChars).c_str());
+                // 微信对话样式按气泡宽度自动折行，标题完整显示（返回给 LLM 的文本不变）
+                display_->SetChatMessage("assistant", card->title.c_str());
                 return result;
             });
 
@@ -553,10 +607,10 @@ private:
             });
     }
 
-    // 把卡片标题与要点显示到屏幕（底部字幕栏 + 通知）
+    // 把卡片标题显示到屏幕（微信对话样式的聊天气泡 + 进度通知）
     void ShowCardOnScreen(const ReviewCard& card, int index, int total) {
-        // 240x240 方屏：标题行按字符数截断，防止溢出/半行被裁
-        std::string title_line = TruncateUtf8(card.id + " " + card.title, kReviewSubtitleMaxChars);
+        // 标题完整入气泡，由 LVGL 折行；超出部分用 VOL± 翻页查看
+        std::string title_line = card.id + " " + card.title;
         display_->SetChatMessage("assistant", title_line.c_str());
         // 用通知栏展示进度
         std::string progress = "卡片 " + std::to_string(index + 1) + "/" + std::to_string(total);
@@ -566,11 +620,14 @@ private:
 public:
     ZHENGCHEN_1_54TFT_WIFI() :
         boot_button_(BOOT_BUTTON_GPIO),
-        volume_up_button_(VOLUME_UP_BUTTON_GPIO),
-        volume_down_button_(VOLUME_DOWN_BUTTON_GPIO) {
+        // 音量键显式给 600ms 长按阈值：按住 ≥600ms 归为 long press，
+        // 松手不会再补发 click，避免"翻页时顺手改了音量"
+        volume_up_button_(VOLUME_UP_BUTTON_GPIO, false, kVolumeLongPressMs),
+        volume_down_button_(VOLUME_DOWN_BUTTON_GPIO, false, kVolumeLongPressMs) {
         InitializePowerManager();
         InitializePowerSaveTimer();
         InitializeSpi();
+        InitializeChatScrollTimer();
         InitializeButtons();
         InitializeSt7789Display();  
         InitializeTools();
